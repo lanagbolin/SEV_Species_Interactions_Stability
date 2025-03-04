@@ -1,0 +1,370 @@
+---
+title: "Selecting_species_for_analysis"
+author: "Lana Bolin"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+
+# Prep
+
+```{r, message=F}
+# Clear environment
+rm(list = ls())
+
+# Load in libraries
+library(dplyr)
+library(ggplot2)
+library(ggsignif)
+library(cowplot)
+library(magrittr)
+library(lme4)
+library(car)
+library(emmeans)
+library(lmerTest)
+library(cowplot)  # paneled figures
+library(tidyr)   # For making soil moisture data long form
+library(tidyverse)
+library(DHARMa)
+library(MuMIn) # for AICc function
+library(sjPlot) # for plotting non-interaction marginal effect
+library(scales) # to emmulate ggplot color palate in interactions( #)
+
+# Load the dataset. Each row is a quadrat.
+setwd("~/GitHub/SEV_Species_Interactions_Stability")
+data.biomass <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/data/plant_species_stability_traits.csv", stringsAsFactors = T)
+
+```
+
+Load and clean species data from EDI
+```{r}
+# Package ID: knb-lter-sev.318.1 Cataloging System:https://pasta.edirepository.org.
+# Data set title: Sevilleta Long Term Ecological Research Program Plant Species List.
+# Data set creator:  Stephanie Baker - University of New Mexico 
+# Data set creator:  Lauren Baur - University of New Mexico 
+# Data set creator:  Esteban Muldavin - University of New Mexico 
+# Data set creator:  Jennifer Rudgers - University of New Mexico 
+# Contact:  Kristofer Hall -  University of New Mexico  - khall001@unm.edu
+# Stylesheet v2.11 for metadata conversion into program: John H. Porter, Univ. Virginia, jporter@virginia.edu 
+
+inUrl1  <- "https://pasta.lternet.edu/package/data/eml/knb-lter-sev/318/1/fdfe27e194a020d066acd8f11aa08dae" 
+infile1 <- tempfile()
+try(download.file(inUrl1,infile1,method="curl"))
+if (is.na(file.size(infile1))) download.file(inUrl1,infile1,method="auto")
+
+                   
+ dt1 <-read.csv(infile1,header=F 
+          ,skip=1
+            ,sep=","  
+        , col.names=c(
+                    "kartez",     
+                    "family",     
+                    "genus",     
+                    "sp_epithet",     
+                    "subspecies_variety",     
+                    "common_name",     
+                    "Native",     
+                    "PhotoPath",     
+                    "LifeHistory",     
+                    "FunctionalGroup"    ), check.names=TRUE)
+               
+unlink(infile1)
+		    
+# Fix any interval or ratio columns mistakenly read in as nominal and nominal columns read as numeric or dates read as strings
+                
+if (class(dt1$kartez)!="factor") dt1$kartez<- as.factor(dt1$kartez)
+if (class(dt1$family)!="factor") dt1$family<- as.factor(dt1$family)
+if (class(dt1$genus)!="factor") dt1$genus<- as.factor(dt1$genus)
+if (class(dt1$sp_epithet)!="factor") dt1$sp_epithet<- as.factor(dt1$sp_epithet)
+if (class(dt1$subspecies_variety)!="factor") dt1$subspecies_variety<- as.factor(dt1$subspecies_variety)
+if (class(dt1$common_name)!="factor") dt1$common_name<- as.factor(dt1$common_name)
+if (class(dt1$Native)!="factor") dt1$Native<- as.factor(dt1$Native)
+if (class(dt1$PhotoPath)!="factor") dt1$PhotoPath<- as.factor(dt1$PhotoPath)
+if (class(dt1$LifeHistory)!="factor") dt1$LifeHistory<- as.factor(dt1$LifeHistory)
+if (class(dt1$FunctionalGroup)!="factor") dt1$FunctionalGroup<- as.factor(dt1$FunctionalGroup)
+                
+# Convert Missing Values to NA for non-dates
+                
+dt1$sp_epithet <- as.factor(ifelse((trimws(as.character(dt1$sp_epithet))==trimws("NA")),NA,as.character(dt1$sp_epithet)))
+dt1$Native <- as.factor(ifelse((trimws(as.character(dt1$Native))==trimws("NA")),NA,as.character(dt1$Native)))
+dt1$PhotoPath <- as.factor(ifelse((trimws(as.character(dt1$PhotoPath))==trimws("NA")),NA,as.character(dt1$PhotoPath)))
+dt1$LifeHistory <- as.factor(ifelse((trimws(as.character(dt1$LifeHistory))==trimws("NA")),NA,as.character(dt1$LifeHistory)))
+dt1$FunctionalGroup <- as.factor(ifelse((trimws(as.character(dt1$FunctionalGroup))==trimws("NA")),NA,as.character(dt1$FunctionalGroup)))
+
+
+# Here is the structure of the input data frame:
+str(dt1)                            
+attach(dt1)                            
+# The analyses below are basic descriptions of the variables. After testing, they should be replaced.                 
+
+summary(kartez)
+summary(family)
+summary(genus)
+summary(sp_epithet)
+summary(subspecies_variety)
+summary(common_name)
+summary(Native)
+summary(PhotoPath)
+summary(LifeHistory)
+summary(FunctionalGroup) 
+                # Get more details on character variables
+                 
+summary(as.factor(dt1$kartez)) 
+summary(as.factor(dt1$family)) 
+summary(as.factor(dt1$genus)) 
+summary(as.factor(dt1$sp_epithet)) 
+summary(as.factor(dt1$subspecies_variety)) 
+summary(as.factor(dt1$common_name)) 
+summary(as.factor(dt1$Native)) 
+summary(as.factor(dt1$PhotoPath)) 
+summary(as.factor(dt1$LifeHistory)) 
+summary(as.factor(dt1$FunctionalGroup))
+detach(dt1)               
+        
+data.species <- dt1
+```
+
+
+Load and clean biomass data from EDI. I'm not using this right now because I'm using the "plant_species_stability_traits.csv" dataset Jenn sent me that has the years_count column, which makes things super easy.
+```{r, eval=F}
+# Package ID: knb-lter-sev.182.244948 Cataloging System:https://pasta.edirepository.org.
+# Data set title: Core Research Site Web Seasonal Biomass and Seasonal and Annual NPP Data for the Net Primary Production Study at the Sevilleta National Wildlife Refuge, New Mexico.
+# Data set creator:  Lauren Baur - University of New Mexico 
+# Data set creator:  Scott Collins - University of New Mexico 
+# Data set creator:  Esteban Muldavin - University of New Mexico 
+# Data set creator:  Jennifer Rudgers - University of New Mexico 
+# Data set creator:  William Pockman - University of New Mexico 
+# Contact:    - Information Manager University of New Mexico  - sevim@unm.edu
+# Stylesheet v2.11 for metadata conversion into program: John H. Porter, Univ. Virginia, jporter@virginia.edu 
+
+inUrl1  <- "https://pasta.lternet.edu/package/data/eml/knb-lter-sev/182/244948/a0105a5407f403a472fd1e8122f57269" 
+infile1 <- tempfile()
+try(download.file(inUrl1,infile1,method="curl"))
+if (is.na(file.size(infile1))) download.file(inUrl1,infile1,method="auto")
+
+                   
+ dt1 <-read.csv(infile1,header=F 
+          ,skip=1
+            ,sep=","  
+                ,quot='"' 
+        , col.names=c(
+                    "site",     
+                    "year",     
+                    "season",     
+                    "date",     
+                    "web",     
+                    "transect",     
+                    "block",     
+                    "plot",     
+                    "subplot",     
+                    "quad",     
+                    "treatment",     
+                    "kartez",     
+                    "genus",     
+                    "sp.epithet",     
+                    "family",     
+                    "LifeHistory",     
+                    "PhotoPath",     
+                    "FunctionalGroup",     
+                    "cover",     
+                    "volume",     
+                    "biomass.BM",     
+                    "biomass.BIM",     
+                    "SiteCluster",     
+                    "MetStation",     
+                    "season.precip",     
+                    "GDD",     
+                    "SPEI.comp"    ), check.names=TRUE)
+               
+unlink(infile1)
+		    
+# Fix any interval or ratio columns mistakenly read in as nominal and nominal columns read as numeric or dates read as strings
+                
+if (class(dt1$site)!="factor") dt1$site<- as.factor(dt1$site)
+if (class(dt1$season)!="factor") dt1$season<- as.factor(dt1$season)                                   
+# attempting to convert dt1$date dateTime string to R date structure (date or POSIXct)                                
+tmpDateFormat<-"%Y-%m-%d"
+tmp1date<-as.Date(dt1$date,format=tmpDateFormat)
+# Keep the new dates only if they all converted correctly
+if(length(tmp1date) == length(tmp1date[!is.na(tmp1date)])){dt1$date <- tmp1date } else {print("Date conversion failed for dt1$date. Please inspect the data and do the date conversion yourself.")}                                                                    
+rm(tmpDateFormat,tmp1date) 
+if (class(dt1$web)!="factor") dt1$web<- as.factor(dt1$web)
+if (class(dt1$transect)!="factor") dt1$transect<- as.factor(dt1$transect)
+if (class(dt1$block)!="factor") dt1$block<- as.factor(dt1$block)
+if (class(dt1$plot)!="factor") dt1$plot<- as.factor(dt1$plot)
+if (class(dt1$subplot)!="factor") dt1$subplot<- as.factor(dt1$subplot)
+if (class(dt1$quad)!="factor") dt1$quad<- as.factor(dt1$quad)
+if (class(dt1$treatment)!="factor") dt1$treatment<- as.factor(dt1$treatment)
+if (class(dt1$kartez)!="factor") dt1$kartez<- as.factor(dt1$kartez)
+if (class(dt1$genus)!="factor") dt1$genus<- as.factor(dt1$genus)
+if (class(dt1$sp.epithet)!="factor") dt1$sp.epithet<- as.factor(dt1$sp.epithet)
+if (class(dt1$family)!="factor") dt1$family<- as.factor(dt1$family)
+if (class(dt1$LifeHistory)!="factor") dt1$LifeHistory<- as.factor(dt1$LifeHistory)
+if (class(dt1$PhotoPath)!="factor") dt1$PhotoPath<- as.factor(dt1$PhotoPath)
+if (class(dt1$FunctionalGroup)!="factor") dt1$FunctionalGroup<- as.factor(dt1$FunctionalGroup)
+if (class(dt1$cover)=="factor") dt1$cover <-as.numeric(levels(dt1$cover))[as.integer(dt1$cover) ]               
+if (class(dt1$cover)=="character") dt1$cover <-as.numeric(dt1$cover)
+if (class(dt1$volume)=="factor") dt1$volume <-as.numeric(levels(dt1$volume))[as.integer(dt1$volume) ]               
+if (class(dt1$volume)=="character") dt1$volume <-as.numeric(dt1$volume)
+if (class(dt1$biomass.BM)=="factor") dt1$biomass.BM <-as.numeric(levels(dt1$biomass.BM))[as.integer(dt1$biomass.BM) ]               
+if (class(dt1$biomass.BM)=="character") dt1$biomass.BM <-as.numeric(dt1$biomass.BM)
+if (class(dt1$biomass.BIM)=="factor") dt1$biomass.BIM <-as.numeric(levels(dt1$biomass.BIM))[as.integer(dt1$biomass.BIM) ]               
+if (class(dt1$biomass.BIM)=="character") dt1$biomass.BIM <-as.numeric(dt1$biomass.BIM)
+if (class(dt1$SiteCluster)!="factor") dt1$SiteCluster<- as.factor(dt1$SiteCluster)
+if (class(dt1$MetStation)!="factor") dt1$MetStation<- as.factor(dt1$MetStation)
+if (class(dt1$season.precip)=="factor") dt1$season.precip <-as.numeric(levels(dt1$season.precip))[as.integer(dt1$season.precip) ]               
+if (class(dt1$season.precip)=="character") dt1$season.precip <-as.numeric(dt1$season.precip)
+if (class(dt1$GDD)=="factor") dt1$GDD <-as.numeric(levels(dt1$GDD))[as.integer(dt1$GDD) ]               
+if (class(dt1$GDD)=="character") dt1$GDD <-as.numeric(dt1$GDD)
+if (class(dt1$SPEI.comp)=="factor") dt1$SPEI.comp <-as.numeric(levels(dt1$SPEI.comp))[as.integer(dt1$SPEI.comp) ]               
+if (class(dt1$SPEI.comp)=="character") dt1$SPEI.comp <-as.numeric(dt1$SPEI.comp)
+                
+# Convert Missing Values to NA for non-dates
+                
+dt1$site <- as.factor(ifelse((trimws(as.character(dt1$site))==trimws("NA")),NA,as.character(dt1$site)))
+dt1$season <- as.factor(ifelse((trimws(as.character(dt1$season))==trimws("NA")),NA,as.character(dt1$season)))
+dt1$web <- as.factor(ifelse((trimws(as.character(dt1$web))==trimws("NA")),NA,as.character(dt1$web)))
+dt1$transect <- as.factor(ifelse((trimws(as.character(dt1$transect))==trimws("NA")),NA,as.character(dt1$transect)))
+dt1$block <- as.factor(ifelse((trimws(as.character(dt1$block))==trimws("NA")),NA,as.character(dt1$block)))
+dt1$plot <- as.factor(ifelse((trimws(as.character(dt1$plot))==trimws("NA")),NA,as.character(dt1$plot)))
+dt1$subplot <- as.factor(ifelse((trimws(as.character(dt1$subplot))==trimws("NA")),NA,as.character(dt1$subplot)))
+dt1$quad <- as.factor(ifelse((trimws(as.character(dt1$quad))==trimws("NA")),NA,as.character(dt1$quad)))
+dt1$treatment <- as.factor(ifelse((trimws(as.character(dt1$treatment))==trimws("NA")),NA,as.character(dt1$treatment)))
+dt1$kartez <- as.factor(ifelse((trimws(as.character(dt1$kartez))==trimws("NA")),NA,as.character(dt1$kartez)))
+dt1$genus <- as.factor(ifelse((trimws(as.character(dt1$genus))==trimws("NA")),NA,as.character(dt1$genus)))
+dt1$sp.epithet <- as.factor(ifelse((trimws(as.character(dt1$sp.epithet))==trimws("NA")),NA,as.character(dt1$sp.epithet)))
+dt1$family <- as.factor(ifelse((trimws(as.character(dt1$family))==trimws("NA")),NA,as.character(dt1$family)))
+dt1$LifeHistory <- as.factor(ifelse((trimws(as.character(dt1$LifeHistory))==trimws("NA")),NA,as.character(dt1$LifeHistory)))
+dt1$PhotoPath <- as.factor(ifelse((trimws(as.character(dt1$PhotoPath))==trimws("NA")),NA,as.character(dt1$PhotoPath)))
+dt1$FunctionalGroup <- as.factor(ifelse((trimws(as.character(dt1$FunctionalGroup))==trimws("NA")),NA,as.character(dt1$FunctionalGroup)))
+dt1$cover <- ifelse((trimws(as.character(dt1$cover))==trimws("NA")),NA,dt1$cover)               
+suppressWarnings(dt1$cover <- ifelse(!is.na(as.numeric("NA")) & (trimws(as.character(dt1$cover))==as.character(as.numeric("NA"))),NA,dt1$cover))
+dt1$volume <- ifelse((trimws(as.character(dt1$volume))==trimws("NA")),NA,dt1$volume)               
+suppressWarnings(dt1$volume <- ifelse(!is.na(as.numeric("NA")) & (trimws(as.character(dt1$volume))==as.character(as.numeric("NA"))),NA,dt1$volume))
+dt1$biomass.BM <- ifelse((trimws(as.character(dt1$biomass.BM))==trimws("NA")),NA,dt1$biomass.BM)               
+suppressWarnings(dt1$biomass.BM <- ifelse(!is.na(as.numeric("NA")) & (trimws(as.character(dt1$biomass.BM))==as.character(as.numeric("NA"))),NA,dt1$biomass.BM))
+dt1$biomass.BIM <- ifelse((trimws(as.character(dt1$biomass.BIM))==trimws("NA")),NA,dt1$biomass.BIM)               
+suppressWarnings(dt1$biomass.BIM <- ifelse(!is.na(as.numeric("NA")) & (trimws(as.character(dt1$biomass.BIM))==as.character(as.numeric("NA"))),NA,dt1$biomass.BIM))
+dt1$SiteCluster <- as.factor(ifelse((trimws(as.character(dt1$SiteCluster))==trimws("NA")),NA,as.character(dt1$SiteCluster)))
+dt1$MetStation <- as.factor(ifelse((trimws(as.character(dt1$MetStation))==trimws("NA")),NA,as.character(dt1$MetStation)))
+dt1$season.precip <- ifelse((trimws(as.character(dt1$season.precip))==trimws("NA")),NA,dt1$season.precip)               
+suppressWarnings(dt1$season.precip <- ifelse(!is.na(as.numeric("NA")) & (trimws(as.character(dt1$season.precip))==as.character(as.numeric("NA"))),NA,dt1$season.precip))
+dt1$GDD <- ifelse((trimws(as.character(dt1$GDD))==trimws("NA")),NA,dt1$GDD)               
+suppressWarnings(dt1$GDD <- ifelse(!is.na(as.numeric("NA")) & (trimws(as.character(dt1$GDD))==as.character(as.numeric("NA"))),NA,dt1$GDD))
+dt1$SPEI.comp <- ifelse((trimws(as.character(dt1$SPEI.comp))==trimws("NA")),NA,dt1$SPEI.comp)               
+suppressWarnings(dt1$SPEI.comp <- ifelse(!is.na(as.numeric("NA")) & (trimws(as.character(dt1$SPEI.comp))==as.character(as.numeric("NA"))),NA,dt1$SPEI.comp))
+
+
+# Here is the structure of the input data frame:
+str(dt1)                            
+attach(dt1)                            
+# The analyses below are basic descriptions of the variables. After testing, they should be replaced.                 
+
+summary(site)
+summary(year)
+summary(season)
+summary(date)
+summary(web)
+summary(transect)
+summary(block)
+summary(plot)
+summary(subplot)
+summary(quad)
+summary(treatment)
+summary(kartez)
+summary(genus)
+summary(sp.epithet)
+summary(family)
+summary(LifeHistory)
+summary(PhotoPath)
+summary(FunctionalGroup)
+summary(cover)
+summary(volume)
+summary(biomass.BM)
+summary(biomass.BIM)
+summary(SiteCluster)
+summary(MetStation)
+summary(season.precip)
+summary(GDD)
+summary(SPEI.comp) 
+                # Get more details on character variables
+                 
+summary(as.factor(dt1$site)) 
+summary(as.factor(dt1$season)) 
+summary(as.factor(dt1$web)) 
+summary(as.factor(dt1$transect)) 
+summary(as.factor(dt1$block)) 
+summary(as.factor(dt1$plot)) 
+summary(as.factor(dt1$subplot)) 
+summary(as.factor(dt1$quad)) 
+summary(as.factor(dt1$treatment)) 
+summary(as.factor(dt1$kartez)) 
+summary(as.factor(dt1$genus)) 
+summary(as.factor(dt1$sp.epithet)) 
+summary(as.factor(dt1$family)) 
+summary(as.factor(dt1$LifeHistory)) 
+summary(as.factor(dt1$PhotoPath)) 
+summary(as.factor(dt1$FunctionalGroup)) 
+summary(as.factor(dt1$SiteCluster)) 
+summary(as.factor(dt1$MetStation))
+detach(dt1)               
+        
+data.biomass <- dt1
+```
+
+
+
+Select species that have at least 3 years of non-zero biomass, and filter to only core sites
+```{r}
+data.biomass.core <- data.biomass %>%
+  filter(site %in% c("core_black", "core_blue", "core_creosote", "core_PJ")) 
+
+length(unique(data.biomass.core$kartez))
+
+# Sum the biomass for each species across all sites and quadrats within each year. Columns 16:39 are the data for each year, so look across those columns. 24 total years.
+yearsums <- data.biomass.core %>% group_by(kartez) %>%
+  mutate_at(vars(16:39), ~replace_na(., 0)) %>%  # Change NAs to 0's for yearly biomass data
+  summarise_each(funs(sum), X1999, X2000, X2001, X2002, X2003, X2004, X2005, X2006, X2007, X2008, X2009, X2010, X2011, X2012, X2013, X2014, X2015, X2016, X2017, X2018, X2019, X2020, X2021, X2022)  # Get total biomass for each species in each year (across sites & quadrats)
+
+# Count the number of years each species has non-zero biomass across the SEV. Add as column to yearsums
+yearsums$n.nonzero.years <- rowSums(yearsums[, 2:25] != 0)
+
+# Filter to years with at least 3 years producing biomass 
+ThreePlus <- yearsums %>%
+  filter(n.nonzero.years >=3) 
+
+# Filter out species with fewer than 5 non-zero years
+data.more3 <- data.biomass.core %>%
+  filter(kartez %in% ThreePlus$kartez)
+
+length(unique(data.more3$kartez))
+```
+
+Combine with species data
+```{r}
+data <- left_join(data.more3, data.species, by = "kartez")
+
+species.list <- data %>%
+  select(kartez, genus, sp_epithet, LifeHistory, FunctionalGroup, PhotoPath) %>%
+  unique(.)
+
+write.csv(species.list, "species.list.csv", row.names = F)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

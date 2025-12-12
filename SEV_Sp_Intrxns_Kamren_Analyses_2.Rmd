@@ -16,8 +16,6 @@ There is an other script called "SEV_Sp_Intrxns_Kamren_Analyses" that imports th
 
 * GO THROUGH WHOLE SCRIPT AND FIX STUFF FROM FILTERING TO FALL ONLY
 
-* I'm on line 667 - trying to decide how to deal with the fact that for the bird data, they went to each transect 3 times, whereas before that they only went once. Gonna talk to Jenn about it.
-* Bird data only have 11 years, while bee and mammal data have 17. So I should probably also analyze bee and mammal data from 1991 to 2025.
 * Try merging bee, mammal, and plant data. Plot plant CV vs. bee CV, using the mean CV per site (only 3 sites, so there will only be 3 data points).
 * Ara is having a look at the brms models and trouble-shooting. He's going to try reducing the step size, playing with the priors, and replacing quad_ID with lat/long.
 
@@ -30,22 +28,17 @@ There is an other script called "SEV_Sp_Intrxns_Kamren_Analyses" that imports th
 
 # Setup
 
+## Load and clean data
+
 ```{r, message=F}
 # Clear environment
 rm(list = ls())
 
 # Load libraries
-libraries <- c("magrittr", "lme4", "car", "emmeans", "MuMIn", "scales", "sjPlot", "vegan", "ape", "phytools", "devtools", "ggbiplot", "tidyverse", "googlesheets4", "brms", "reshape2", "DHARMa")
+libraries <- c("magrittr", "lme4", "car", "emmeans", "MuMIn", "scales", "sjPlot", "vegan", "ape", "phytools", "devtools", "ggbiplot", "tidyverse", "googlesheets4", "brms", "reshape2", "DHARMa", "ggeffects")
 invisible(lapply(libraries, require, character.only = T))
 
-# Load the dataset. Each row is a quadrat.
 setwd("~/GitHub/SEV_Species_Interactions_Stability")
-data.intrxns <- read_sheet("https://docs.google.com/spreadsheets/d/1hz3HQ7cWakZdqdvxTCEz2sbjjtqssulhvIh4sBBYEI8/edit?gid=0#gid=0", "Data")
-quad.data <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/data/NPP_quads_latlong_edited.csv", stringsAsFactors = T) # Has quad GPS coordinates for Bayesian analysis
-data.species <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/data/SevilletaSpeciesList2019.csv", stringsAsFactors = T) # Read in species data to get native/invasive status
-
-### Import data that Jenn sent (she was able to run my code - see email from 4/1/2025). Wide format, columns for each year.
-mass_species_cast <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/data/mass_species_cast.csv")
 
 # Set plot theme
 theme_set(theme_bw() +
@@ -57,11 +50,47 @@ theme_set(theme_bw() +
               ,axis.text.x  = element_text(vjust=0.5, size=10)
             ))
 
+### Load the datasets
+
+# Interaction data. Each row is a quadrat.
+data.intrxns <- read_sheet("https://docs.google.com/spreadsheets/d/1hz3HQ7cWakZdqdvxTCEz2sbjjtqssulhvIh4sBBYEI8/edit?gid=0#gid=0", "Data")
+
+# Quad data. Has quad GPS coordinates for Bayesian analysis
+quad.data <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/data/NPP_quads_latlong_edited.csv", stringsAsFactors = T) 
+
+# Read in species data to get native/invasive status
+data.species <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/data/SevilletaSpeciesList2019.csv", stringsAsFactors = T) 
+
+# Import data that Jenn sent (she was able to run my code - see email from 4/1/2025). Wide format, columns for each year.
+mass_species_cast <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/data/mass_species_cast.csv")
+
+# Read in to get plant families
+family.data <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/data/plant_species_stability_traits_2024.csv", stringsAsFactors = T)
+```
+
+### Clean data
+
+Prep each dataset
+```{r}
+### mass_species_cast
+
 # Filter species_CV data to only include "C" treatment
 mass_species_cast %<>% filter(treatment == "C")
 
+# Fall only
+mass_species_cast %<>% filter(season == "fall")
+
+
+### data.species
+
 # Fix typo in species data
 data.species$Native[data.species$Native == "Y"] <- "y"
+
+# Select columns I need
+data.species %<>% dplyr::select(kartez, Native)
+
+
+### data.intrxns
 
 # Rename columns from species interactions data sheet
 data.intrxns %<>% 
@@ -84,8 +113,6 @@ data.intrxns %<>%
   dplyr::select(-c(genus, species))
 
 # Fix LifeHistory 
-levels(data.intrxns$LifeHistory)
-
 data.intrxns %<>% mutate(LifeHistory = ifelse(LifeHistory %in% c("a", "annual"), "annual",
                                              ifelse(LifeHistory %in% c("p", "perennial"), "perennial", NA)))
 
@@ -97,48 +124,15 @@ data.intrxns %<>%
 # Change all character vectors to factors
 data.intrxns %<>% mutate_if(is.character, as.factor)
 
-# Join in data for native/invasive status, merge datasets
-data.species %<>% dplyr::select(kartez, Native)
-data <- left_join(data.intrxns, data.species, by = "kartez")
-data <- left_join(data, mass_species_cast, by = "kartez")
-
-# Change characters to factors
-data %<>% mutate_if(is.character, as.factor)
-
-# Make sure levels are what I'm expecting
-levels(data$Legume)
-levels(data$Pollination)
-levels(data$Dispersal) 
-
-# NOMI is the only species with "(likely W)A" dispersal level. Let's call it WA for now.
-data %>% filter(Dispersal == "(likely W)A") %>% group_by(kartez) %>% summarise(n = n())
-data %<>% mutate(Dispersal = fct_recode(Dispersal, "WA" = "(likely W)A"))
-
 # Fix FunctionalGroup levels
-data %<>%
-  mutate(FunctionalGroup = ifelse(FunctionalGroup %in% c("f", "forb"), "forb",
-                                  ifelse(FunctionalGroup %in% c("g", "grass"), "grass",
-                                         ifelse(FunctionalGroup %in% c("s", "shrub"), "shrub", NA))))
-
 data.intrxns %<>%
   mutate(FunctionalGroup = ifelse(FunctionalGroup %in% c("f", "forb"), "forb",
                                   ifelse(FunctionalGroup %in% c("g", "grass"), "grass",
                                          ifelse(FunctionalGroup %in% c("s", "shrub"), "shrub", NA))))
 
-data <- as.data.frame(data)
 
-data$X <- NULL
+### quad.data
 
-# Filter out "Sporobolus_NA", "Opuntia_NA", "Astragalus_NA", and "Aristida_NA". These are kartez: ASTRA, ARIST, OPUNT, SPORO
-data %<>% filter(!kartez %in% c("SPORO", "OPUNT", "ASTRA", "ARIST")) 
-
-data.mass <- data
-nrow(data.mass)
-```
-
-
-Merge quad coordinates with data
-```{r}
 quad.data$quad_ID <- as.factor(
       paste(
         quad.data$site,
@@ -151,28 +145,64 @@ quad.data$quad_ID <- as.factor(
         quad.data$quad,
         sep = "_"))
 
-# Change character and some numeric vectors to factors
-data.mass %<>% mutate_if(is.character, as.factor)
-data.mass$web <- as.factor(data.mass$web)
-quad.data %<>% mutate_if(is.character, as.factor)
-
-data.mass$block <- as.factor(data.mass$block)
 quad.data$web <- as.factor(quad.data$web)
 quad.data$block <- as.factor(quad.data$web)
 quad.data$quad <- as.factor(quad.data$quad)
 
+
+# family.data
+
+family.data %<>%
+  dplyr::select(kartez, family) %>%
+  group_by(kartez) %>%
+  distinct()
+```
+
+Merge datasets
+```{r}
+# Merge species interaction data, native/invasive status, and wide data
+data.mass <- left_join(data.intrxns, data.species, by = "kartez")
+data.mass <- left_join(data.mass, mass_species_cast, by = "kartez")
+
+# Change characters to factors
+data.mass %<>% mutate_if(is.character, as.factor)
+data.mass$block <- as.factor(data.mass$block)
+data.mass$web <- as.factor(data.mass$web)
+data.mass$block <- as.factor(data.mass$web)
+data.mass$quad <- as.factor(data.mass$quad)
+
+# Make sure levels are what I'm expecting
+levels(data.mass$Pollination)
+levels(data.mass$Dispersal) 
+
+# NOMI is the only species with "(likely W)A" dispersal level. Let's call it WA.
+data.mass %>% filter(Dispersal == "(likely W)A") %>% group_by(kartez) %>% summarise(n = n())
+data.mass %<>% mutate(Dispersal = fct_recode(Dispersal, "WA" = "(likely W)A"))
+
+data.mass <- as.data.frame(data.mass)
+
+data.mass$X <- NULL
+
+# Filter out unidentified species (that were only identified to genus) "Sporobolus_NA", "Opuntia_NA", "Astragalus_NA", and "Aristida_NA". These are kartez: ASTRA, ARIST, OPUNT, SPORO
+data.mass %<>% filter(!kartez %in% c("SPORO", "OPUNT", "ASTRA", "ARIST")) 
+
+nrow(data.mass)
+
+# Merge quad coordinates with data
 data <- left_join(data.mass, quad.data, by = c("site", "web", "transect", "block", "plot", "subplot", "quad", "treatment", "quad_ID"))
 
 nrow(data)
 ```
 
+
+
 Start everybody at the start date of the shortest site because longer time series –> pick up more variability (need same time series length).
 ```{r}
-# Find the earliest year when there is data for all of the sites. I'm going to filter out the earlier years after filtering to quadrats with at least 10 years of data and checking that some species don't have mostly zero abundance in one year. Maybe make a dataset starting in 2004 (7 sites), and one starting in 2006 (9 sites), 2008 (10 sites), 2011 (12 sites), and 2012 (14 sites).
+# Find the earliest year when there is data for all of the sites. I'm going to filter out the earlier years after filtering to quadrats with at least 10 years of data and checking that some species don't have mostly zero abundance in one year. Maybe make a dataset starting in 2004 (7 sites), and one starting in 2006 (9 sites), 2008 (10 sites), 2011 (11 sites), and 2012 (13 sites).
 
 # I may also want to calculate CV on dataset restricted to these years... Probably I guess? Also for SEV plant traits analysis!
 
-yrs.monitored <- data %>%
+data %>%
   group_by(site) %>%
   summarise(X1999.yrs = sum(!is.na(X1999)),
             X2000.yrs = sum(!is.na(X2000)),
@@ -217,25 +247,16 @@ length(unique(data$kartez))
 setdiff(data$kartez, data.2012$kartez)
 ```
 
-Fall only
-```{r}
-data.2012 %<>% filter(season == "fall")
-length(unique(data.2012$kartez))
-```
-
 
 Calculate species_CV for each species in each quad, in each dataset. I'm going to focus on 2004 and 2012 for now.
 ```{r}
 # List of dfs
-#dfs.list <- list(data.2004, data.2006, data.2008, data.2011, data.2012)
 dfs.list <- list(data.2004, data.2012)
 
 # List of df names
-#dfs.list.names <- list("data.2004", "data.2006", "data.2008", "data.2011", "data.2012")
 dfs.list.names <- list("data.2004", "data.2012")
 
 # List of end column numbers (final year of dataset)
-#end.cols <- list(54, 52, 50, 47, 46)
 end.cols <- list(55, 47)
 
 final.dfs <- list()
@@ -271,8 +292,6 @@ nrow(data.2012) - nrow(data.2004)
 write.csv(data.2012, "~/GitHub/SEV_Species_Interactions_Stability/data/data.2012.csv", row.names = F)
 ```
 
-
-
 Filter out species with less than 3 years of non-zero biomass data.
 ```{r}
 # Sum the biomass for each species across all sites and quadrats within each year. Columns 16:39 are the data for each year, so look across those columns. 24 total years.
@@ -290,68 +309,13 @@ ThreePlus <- yearsums %>%
 data.2012 %<>%
   filter(kartez %in% ThreePlus$kartez)
 
+# This step filtered out 27 species (from 156 to 129)
 length(unique(data.2012$kartez))
 ```
 
-How many families are in the dataset?
-```{r}
-family.data <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/data/plant_species_stability_traits_2024.csv", stringsAsFactors = T)
+### Data summaries
 
-family.data %<>%
-  dplyr::select(kartez, family) %>%
-  group_by(kartez) %>%
-  distinct()
-
-nrow(data.2012)
-
-data.2012 <- left_join(data.2012, family.data, by = "kartez")
-
-data.2012 %>%
-  group_by(family) %>% 
-  dplyr::summarise(n = n())
-
-```
-
-
-## How many species are in each category
-
-```{r}
-### Pollination
-# Original categories
-table(data.intrxns$Pollination)
-# With WA re-leveled as W
-table(data.intrxns$Pollination.new)
-
-### Dispersal
-# Original categories
-table(data.intrxns$Dispersal)
-# With WA re-leveled as W
-table(data.intrxns$Dispersal.new)
-
-### Legume
-table(data.intrxns$Legume)
-
-### Life History
-table(data.intrxns$LifeHistory)
-
-### Native
-
-# Take one row of data per species
-catch <- data %>% 
-  group_by(kartez) %>%
-  filter(row_number()==1)
-
-table(catch$Native)
-
-# What are the 4 non-native species?
-catch %>% 
-  filter(Native == "n") %>%
-  filter(row_number()==1) %>%
-  dplyr::select(kartez)
-
-```
-
-Summaries
+Overall summaries
 ```{r}
 # Number of species
 length(unique(data.2012$kartez))
@@ -435,6 +399,62 @@ data.2012 %>%
   summarise(n = n())
 ```
 
+How many families are in the dataset?
+```{r}
+data.2012 <- left_join(data.2012, family.data, by = "kartez")
+
+families <- data.2012 %>%
+  group_by(family) %>% 
+  dplyr::summarise(n = n()) 
+
+# Number of families in dataset
+nrow(families)
+
+# Families in dataset
+data.2012 %>%
+  group_by(family) %>% 
+  dplyr::summarise(n = n())
+```
+
+How many species are in each category?
+```{r}
+### Pollination
+
+# Original categories
+table(data.intrxns$Pollination)
+# With WA re-leveled as W
+table(data.intrxns$Pollination.new)
+
+
+### Dispersal
+
+# Original categories
+table(data.intrxns$Dispersal)
+# With WA re-leveled as W
+table(data.intrxns$Dispersal.new)
+
+
+### Life History
+table(data.intrxns$LifeHistory)
+
+### Native
+
+# Take one row of data per species
+species.info <- data %>% 
+  group_by(kartez) %>%
+  filter(row_number()==1)
+
+table(species.info$Native)
+
+# What are the 4 non-native species?
+species.info %>% 
+  filter(Native == "n") %>%
+  filter(row_number()==1) %>%
+  dplyr::select(kartez)
+```
+
+
+
 
 Look at data
 ```{r}
@@ -449,7 +469,7 @@ ggplot(data.2012, aes(x = Dispersal.new, y = species_CV)) +
 
 
 
-## How much of the total plant biomass in the system is represented by the focal set?
+How much of the total plant biomass in the system is represented by the focal set?  
 
 Make equivalent dataset with all species in those same quads/years/sites/season
 ```{r}
@@ -510,16 +530,13 @@ mass$quad_ID <- as.factor(
         mass$quad,
         sep = "_"))
 
+# Filter to the same years, quads, season, and sites
 mass.filt <- mass %>% 
   filter(year %in% 2012:2023) %>%
   filter(quad_ID %in% data.2012$quad_ID) %>%
   filter(season == "fall") %>%
   filter(site %in% data.2012$site)
-  
-```
 
-
-```{r}
 # Focal set total biomass: 2012-2023, 14 sites, fall only, filtered quads
 focal.sum <- sum(data.2012$biomass.sum)
 
@@ -528,8 +545,9 @@ total.sum <- sum(mass.filt$biomass.BM)
 
 # % of total biomass represented by our focal set
 focal.sum / total.sum * 100
-
+  
 ```
+
 
 
 
@@ -538,43 +556,36 @@ focal.sum / total.sum * 100
 
 ## Main model
 
-2012: Simplified categories for pollination and dispersal
-
-```{r}
-length(unique(data.2012$kartez))
-```
-
-
-Here, species that are animal and wind pollinated are treated as wind pollinated, because they don’t rely on another species if they can be pollinated by wind.
 ```{r, message=F}
 ### Full model
-mod.all.2012.f2.gps <- lmer(species_CV ~ Pollination.new + Dispersal.new + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(kartez != "CHER2"))
-Anova(mod.all.2012.f2.gps, type = 2)
-plot(mod.all.2012.f2.gps)
+mod.all <- lmer(species_CV ~ Pollination.new + Dispersal.new + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(kartez != "CHER2")) # CHER2 only has family-level data 
+Anova(mod.all, type = 2)
+plot(mod.all)
 
 ### Separate model for each predictor
-mod.pol.2012.f2.gps <- lmer(species_CV ~ Pollination.new + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(kartez != "CHER2")) # Filter out the species that we only have family-level data for
-mod.disp.2012.f2.gps <- lmer(species_CV ~ Dispersal.new + X + Y + (1|kartez), na.action = na.omit, data = data.2012)
+mod.pol <- lmer(species_CV ~ Pollination.new + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(kartez != "CHER2")) # CHER2 only has family-level data 
+mod.disp <- lmer(species_CV ~ Dispersal.new + X + Y + (1|kartez), na.action = na.omit, data = data.2012)
 
-Anova(mod.pol.2012.f2.gps, type = 2)
-Anova(mod.disp.2012.f2.gps, type = 2)
+Anova(mod.pol, type = 2)
+Anova(mod.disp, type = 2)
 
 ### Effect sizes (% increase for animal-pollinated or -dispersed)
 
 # Pollination
-pol.emm <- summary(emmeans(mod.pol.2012.f2.gps, pairwise ~ Pollination.new))
+pol.emm <- summary(emmeans(mod.pol, pairwise ~ Pollination.new))
 (pol.emm$emmeans[1, 2] - pol.emm$emmeans[2, 2]) / pol.emm$emmeans[2, 2] * 100
 
 # Dispersal
-disp.emm <- summary(emmeans(mod.disp.2012.f2.gps, pairwise ~ Dispersal.new))
+disp.emm <- summary(emmeans(mod.disp, pairwise ~ Dispersal.new))
 (disp.emm$emmeans[1, 2] - disp.emm$emmeans[2, 2]) / disp.emm$emmeans[2, 2] * 100
+
 
 ### Plot marginal effect of each predictor
 
+## Pollination
+
 # Get predictions
-library(ggeffects)
-pred_pol <- ggpredict(mod.pol.2012.f2.gps, terms = "Pollination.new")
-pred_pol
+pred_pol <- ggpredict(mod.pol, terms = "Pollination.new")
 
 # Plot
 Pol.new.plot <- ggplot(pred_pol, aes(x = x, y = predicted, color = x)) +
@@ -599,10 +610,10 @@ Pol.new.plot <- ggplot(pred_pol, aes(x = x, y = predicted, color = x)) +
 Pol.new.plot
 
 
+## Dispersal
+
 # Get predictions
-library(ggeffects)
-pred_disp <- ggpredict(mod.disp.2012.f2.gps, terms = "Dispersal.new")
-pred_disp
+pred_disp <- ggpredict(mod.disp, terms = "Dispersal.new")
 
 # Plot
 Disp.new.plot <- ggplot(pred_disp, aes(x = x, y = predicted, color = x)) +
@@ -627,13 +638,11 @@ Disp.new.plot <- ggplot(pred_disp, aes(x = x, y = predicted, color = x)) +
 Disp.new.plot
 
 
-
 ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/Pol.new.plot.jpg", Pol.new.plot, dpi = 600, width = 2200, height = 2500, units = "px")
 
 ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/Disp.new.plot.jpg", Disp.new.plot, dpi = 600, width = 2200, height = 2500, units = "px")
-
-
 ```
+
 
 ## Only including species for which we have species-level info
 
@@ -658,10 +667,9 @@ mod.disp.s <- lmer(species_CV ~ Dispersal.new + X + Y + (1|kartez), na.action = 
 Anova(mod.pol.s, type = 2)
 Anova(mod.disp.s, type = 2)
 
-plot_model(mod.pol.s, type = "pred", terms = "Pollination.new", color = "black")
-plot_model(mod.disp.s, type = "pred", terms = "Dispersal.new", color = "black")
+#plot_model(mod.pol.s, type = "pred", terms = "Pollination.new", color = "black")
+#plot_model(mod.disp.s, type = "pred", terms = "Dispersal.new", color = "black")
 ```
-
 
 
 ## Fit a model that includes the Pollination x Dispersal interaction
@@ -678,9 +686,7 @@ plot.polxdisp <- plot_model(mod.pol.disp.int, type = "pred", terms = c("Pollinat
 plot.polxdisp
 
 ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/plot.polxdisp.jpg", plot.polxdisp, dpi = 600, width = 3500, height = 2500, units = "px")
-
 ```
-
 
 
 ## Fit a model that includes the Pollination x LifeHistory interaction
@@ -711,7 +717,7 @@ plot.polxLH
 ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/plot.polxLH.jpg", plot.polxLH, dpi = 600, width = 3100, height = 2300, units = "px")
 
 
-# How many perennial wind-pollinated species are grasses?
+# How many perennial wind-pollinated species are grasses? 21/27 species are grasses
 data.2012 %>%
   filter(LifeHistory == "perennial" & Pollination.new == "W") %>%
   group_by(kartez, FunctionalGroup) %>%
@@ -720,16 +726,16 @@ data.2012 %>%
 ```
 
 ## Try models that include species_mu
-```{r}
+```{r, warning=F}
 ### Separate model for each predictor ###
-mod.pol.2012.f3.gps.mu <- lmer(species_CV ~ Pollination.new * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Pollination != "WA"))
-mod.disp.2012.f3.gps.mu <- lmer(species_CV ~ Dispersal.new * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Dispersal != "WA"))
+mod.pol.mu <- lmer(species_CV ~ Pollination.new * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Pollination != "WA"))
+mod.disp.mu <- lmer(species_CV ~ Dispersal.new * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Dispersal != "WA"))
 
-Anova(mod.pol.2012.f3.gps.mu, type = 2)
-Anova(mod.disp.2012.f3.gps.mu, type = 2)
+Anova(mod.pol.mu, type = 2)
+Anova(mod.disp.mu, type = 2)
 
 # Plot marginal effect of each predictor
-Pol.mu.plot <- plot_model(mod.pol.2012.f3.gps.mu, type = "pred", terms = "Pollination.new", color = "black") +
+Pol.mu.plot <- plot_model(mod.pol.mu, type = "pred", terms = "Pollination.new", color = "black") +
   scale_x_discrete(limits = c("A", "W"),
                    labels = c("Animal", "Wind")) +
   labs(y = "CV of Species Biomass", x = "Pollination Strategy") +
@@ -738,13 +744,18 @@ Pol.mu.plot <- plot_model(mod.pol.2012.f3.gps.mu, type = "pred", terms = "Pollin
 Pol.mu.plot
 
 
-Disp.mu.plot <- plot_model(mod.disp.2012.f3.gps.mu, type = "pred", terms = "Dispersal.new", color = "black")  +
+Disp.mu.plot <- plot_model(mod.disp.mu, type = "pred", terms = "Dispersal.new", color = "black")  +
   scale_x_discrete(limits = c("A", "W"),
                    labels = c("Animal", "Wind")) +
   labs(y = "CV of Species Biomass", x = "Dispersal Strategy") +
   ylim(c(1.7, 2.9))
 
 Disp.mu.plot
+
+ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/Pol.mu.plot.jpg", Pol.mu.plot, dpi = 600, width = 2000, height = 2500, units = "px")
+
+ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/Disp.mu.plot.jpg", Disp.mu.plot, dpi = 600, width = 2000, height = 2500, units = "px")
+
 
 # Plot abundance against CV, and against sd
 ggplot(data.2012, aes(x = species_mu, y = species_CV, color = Pollination.new)) +
@@ -754,15 +765,6 @@ ggplot(data.2012, aes(x = species_mu, y = species_CV, color = Pollination.new)) 
 ggplot(data.2012, aes(x = species_mu, y = species_sd, color = Pollination.new)) +
   geom_point() +
   geom_smooth(method = "lm")
-
-
-
-ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/Pol.mu.plot.jpg", Pol.mu.plot, dpi = 600, width = 2000, height = 2500, units = "px")
-
-ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/Disp.mu.plot.jpg", Disp.mu.plot, dpi = 600, width = 2000, height = 2500, units = "px")
-
-
-
 ```
 
 
@@ -2084,27 +2086,27 @@ model.outputs
 data.2012$Legume <- factor(data.2012$Legume, levels = c("Y", "N"))
 
 ### Full model ###
-mod.all.2012.f3.gps <- lmer(species_CV ~ Pollination + Dispersal + Legume + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Pollination != "WA" & Dispersal != "WA"))
-Anova(mod.all.2012.f3.gps, type = 2)
-plot(mod.all.2012.f3.gps)
+mod.all <- lmer(species_CV ~ Pollination + Dispersal + Legume + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Pollination != "WA" & Dispersal != "WA"))
+Anova(mod.all, type = 2)
+plot(mod.all)
 
 ### Separate model for each predictor ###
-mod.pol.2012.f3.gps <- lmer(species_CV ~ Pollination + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Pollination != "WA"))
-mod.disp.2012.f3.gps <- lmer(species_CV ~ Dispersal + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Dispersal != "WA"))
-mod.leg.2012.f3.gps <- lmer(species_CV ~ Legume + X + Y + (1|kartez), na.action = na.omit, data = data.2012)
+mod.pol <- lmer(species_CV ~ Pollination + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Pollination != "WA"))
+mod.disp <- lmer(species_CV ~ Dispersal + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Dispersal != "WA"))
+mod.leg <- lmer(species_CV ~ Legume + X + Y + (1|kartez), na.action = na.omit, data = data.2012)
 
-Anova(mod.pol.2012.f3.gps, type = 2)
-Anova(mod.disp.2012.f3.gps, type = 2)
-Anova(mod.leg.2012.f3.gps, type = 2)
-
-# Plot marginal effect of each predictor
-plot_model(mod.pol.2012.f3.gps, type = "pred", terms = "Pollination")
-plot_model(mod.disp.2012.f3.gps, type = "pred", terms = "Dispersal")
-plot_model(mod.leg.2012.f3.gps, type = "pred", terms = "Legume")
-
+Anova(mod.pol, type = 2)
+Anova(mod.disp, type = 2)
+Anova(mod.leg, type = 2)
 
 # Plot marginal effect of each predictor
-Pol.plot <- plot_model(mod.pol.2012.f3.gps, type = "pred", terms = "Pollination") +
+plot_model(mod.pol, type = "pred", terms = "Pollination")
+plot_model(mod.disp, type = "pred", terms = "Dispersal")
+plot_model(mod.leg, type = "pred", terms = "Legume")
+
+
+# Plot marginal effect of each predictor
+Pol.plot <- plot_model(mod.pol, type = "pred", terms = "Pollination") +
   scale_x_discrete(limits = c("A", "W"),
                    labels = c("Animal", "Wind")) +
   labs(y = "CV of Species Biomass", x = "Pollination Strategy") +
@@ -2113,7 +2115,7 @@ Pol.plot <- plot_model(mod.pol.2012.f3.gps, type = "pred", terms = "Pollination"
 Pol.plot
 
 
-Disp.plot <- plot_model(mod.disp.2012.f3.gps, type = "pred", terms = "Dispersal")  +
+Disp.plot <- plot_model(mod.disp, type = "pred", terms = "Dispersal")  +
   scale_x_discrete(limits = c("A", "W"),
                    labels = c("Animal", "Wind")) +
   labs(y = "CV of Species Biomass", x = "Dispersal Strategy") +
@@ -2122,7 +2124,7 @@ Disp.plot <- plot_model(mod.disp.2012.f3.gps, type = "pred", terms = "Dispersal"
 Disp.plot
 
 
-Leg.plot <- plot_model(mod.leg.2012.f3.gps, type = "pred", terms = "Legume")  +
+Leg.plot <- plot_model(mod.leg, type = "pred", terms = "Legume")  +
   scale_x_discrete(limits = c("Y", "N"),
                    labels = c("Legume", "Not Legume")) +
   labs(y = "CV of Species Biomass", x = "Legume Status") +
@@ -2144,8 +2146,8 @@ ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/Leg.plot.jpg", Leg.p
 
 
 ### Fit model with Pollination x Dispersal
-mod.poldiso.2012.f3.gps <- lmer(species_CV ~ Pollination * Dispersal + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Pollination != "WA" & Dispersal != "WA"))
-Anova(mod.poldiso.2012.f3.gps, type = 2)
+mod.poldiso <- lmer(species_CV ~ Pollination * Dispersal + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Pollination != "WA" & Dispersal != "WA"))
+Anova(mod.poldiso, type = 2)
 
 ### Fit model with Pollination x LifeHistory
 ## Full model removing WA 
@@ -2160,16 +2162,16 @@ plot_model(mod.pol.lhist.noWA, type = "pred", terms = c("Pollination", "LifeHist
 Try models that include species_mu
 ```{r, eval=F}
 ### Separate model for each predictor ###
-mod.pol.2012.f3.gps.mu <- lmer(species_CV ~ Pollination * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Pollination != "WA"))
-mod.disp.2012.f3.gps.mu <- lmer(species_CV ~ Dispersal * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Dispersal != "WA"))
-mod.leg.2012.f3.gps.mu <- lmer(species_CV ~ Legume * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2012)
+mod.pol.mu <- lmer(species_CV ~ Pollination * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Pollination != "WA"))
+mod.disp.mu <- lmer(species_CV ~ Dispersal * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Dispersal != "WA"))
+mod.leg.mu <- lmer(species_CV ~ Legume * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2012)
 
-Anova(mod.pol.2012.f3.gps.mu, type = 2)
-Anova(mod.disp.2012.f3.gps.mu, type = 2)
-Anova(mod.leg.2012.f3.gps.mu, type = 2)
+Anova(mod.pol.mu, type = 2)
+Anova(mod.disp.mu, type = 2)
+Anova(mod.leg.mu, type = 2)
 
 # Plot marginal effect of each predictor
-Pol.mu.plot <- plot_model(mod.pol.2012.f3.gps.mu, type = "pred", terms = "Pollination") +
+Pol.mu.plot <- plot_model(mod.pol.mu, type = "pred", terms = "Pollination") +
   scale_x_discrete(limits = c("A", "W"),
                    labels = c("Animal", "Wind")) +
   labs(y = "CV of Species Biomass", x = "Pollination Strategy") +
@@ -2185,7 +2187,7 @@ ggplot(data.2012, aes(x = species_mu, y = species_CV, color = Pollination.new)) 
 #
 
 
-Disp.mu.plot <- plot_model(mod.disp.2012.f3.gps.mu, type = "pred", terms = "Dispersal")  +
+Disp.mu.plot <- plot_model(mod.disp.mu, type = "pred", terms = "Dispersal")  +
   scale_x_discrete(limits = c("A", "W"),
                    labels = c("Animal", "Wind")) +
   labs(y = "CV of Species Biomass", x = "Dispersal Strategy") +

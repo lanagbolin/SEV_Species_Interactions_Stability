@@ -548,18 +548,16 @@ length(unique(data.2012$kartez))
 Here, species that are animal and wind pollinated are treated as wind pollinated, because they don’t rely on another species if they can be pollinated by wind.
 ```{r, message=F}
 ### Full model
-mod.all.2012.f2.gps <- lmer(species_CV ~ Pollination.new + Dispersal.new + Legume + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(kartez != "CHER2"))
+mod.all.2012.f2.gps <- lmer(species_CV ~ Pollination.new + Dispersal.new + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(kartez != "CHER2"))
 Anova(mod.all.2012.f2.gps, type = 2)
 plot(mod.all.2012.f2.gps)
 
 ### Separate model for each predictor
 mod.pol.2012.f2.gps <- lmer(species_CV ~ Pollination.new + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(kartez != "CHER2")) # Filter out the species that we only have family-level data for
 mod.disp.2012.f2.gps <- lmer(species_CV ~ Dispersal.new + X + Y + (1|kartez), na.action = na.omit, data = data.2012)
-mod.leg.2012.f2.gps <- lmer(species_CV ~ Legume + X + Y + (1|kartez), na.action = na.omit, data = data.2012)
 
 Anova(mod.pol.2012.f2.gps, type = 2)
 Anova(mod.disp.2012.f2.gps, type = 2)
-Anova(mod.leg.2012.f2.gps, type = 2)
 
 ### Effect sizes (% increase for animal-pollinated or -dispersed)
 
@@ -726,11 +724,9 @@ data.2012 %>%
 ### Separate model for each predictor ###
 mod.pol.2012.f3.gps.mu <- lmer(species_CV ~ Pollination.new * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Pollination != "WA"))
 mod.disp.2012.f3.gps.mu <- lmer(species_CV ~ Dispersal.new * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Dispersal != "WA"))
-mod.leg.2012.f3.gps.mu <- lmer(species_CV ~ Legume * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2012)
 
 Anova(mod.pol.2012.f3.gps.mu, type = 2)
 Anova(mod.disp.2012.f3.gps.mu, type = 2)
-Anova(mod.leg.2012.f3.gps.mu, type = 2)
 
 # Plot marginal effect of each predictor
 Pol.mu.plot <- plot_model(mod.pol.2012.f3.gps.mu, type = "pred", terms = "Pollination.new", color = "black") +

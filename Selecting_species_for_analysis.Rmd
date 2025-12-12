@@ -245,7 +245,7 @@ SpeciesToKeep <- data.biomass.core %>%
   summarise(n = n()) %>% # Get number of quads per species per year
   group_by(kartez) %>%
   summarise(n.years = n()) %>% # Get number of years that each species has biomass data
-  filter(n.years >= 5) # Filter to species with 5 or more years of biomsas data
+  filter(n.years >= 5) # Filter to species with 5 or more years of biomass data
 
 data.biomass.core %<>%
   filter(kartez %in% SpeciesToKeep$kartez)
@@ -263,18 +263,24 @@ species.list <- data.biomass.core %>%
   unique(.)
 
 nrow(species.list)
+length(unique(species.list$kartez))
 
 # Import old species list
 old.species.list <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/species.list.csv", stringsAsFactors = T)
 
 # Get list of species from the new species list that do not overlap with the old species list
 species.list.nonoverlapping <- subset(species.list, !(kartez %in% old.species.list$kartez))
+length(unique(species.list.nonoverlapping$kartez))
 
 # Write CSV of non-overlapping species
 write.csv(species.list.nonoverlapping, "species.list.nonoverlapping.csv", row.names = F)
 
+
+
 # Write CSV of full longer list of species
 write.csv(species.list, "species.list.longer.csv", row.names = F)
+
+
 
 ```
 

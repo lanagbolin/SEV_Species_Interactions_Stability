@@ -1,0 +1,504 @@
+---
+title: "SEV_Sp_Intrxns_Kamren_Analyses"
+author: "Lana Bolin"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: yes
+---
+
+NOTE!! This code uses trait data with CV in it, but it's missing loads of the species we could use. I started another script called "SEV_Sp_Intrxns_Kamren_Analyses_2" which uses the full online biomass data. But I first need to calculate species_CV using those data, following Jenn's script she sent called "SEVLTER_plant_biomass_datamanipulation_stability.R". When I do that, my computer freezes up at the step where I try to make "mass_species_cast" which is what I use to calculate species_CV for each species in each quad over time. So I sent Jenn the code to try to run. But basically, the current results on Kamren's poster only include ~2/3 of the data we have. When we use these new data, we'll have way more power.
+
+
+# Parking downhill
+
+* Plot model predictions (in addition to raw data plots)
+* Update the Bayesian models to include GPS coordinates for quads when I get that code.
+
+
+# To do
+
+* Ask Ara why brms model won't run (it starts the warmup and stalls out)
+* Update Bayesian models to include GPS coordinates for quads when I get that code.
+* Add outcrossing when we have the data. May make more sense as a separate model
+
+
+# Justification of decisions
+
+* For pollination and dispersal, some species are both wind and animal pollinated (as of 2/19/2025, there are 7 such species for pollination and 8 such species for dispersal). I analyzed these both with the 3 categories (W, A, WA), as well as with WA reassigned to W because a plant that can be animal or wind pollinated does not rely on other species.
+
+
+# Setup
+
+```{r, message=F}
+# Clear environment
+rm(list = ls())
+
+# Load libraries
+libraries <- c("magrittr", "lme4", "car", "emmeans", "MuMIn", "scales", "sjPlot", "vegan", "ape", "phytools", "devtools", "ggbiplot", "tidyverse", "googlesheets4", "brms")
+invisible(lapply(libraries, require, character.only = T))
+
+# Load the dataset. Each row is a quadrat.
+setwd("~/GitHub/SEV_Species_Interactions_Stability")
+data.intrxns <- read_sheet("https://docs.google.com/spreadsheets/d/1hz3HQ7cWakZdqdvxTCEz2sbjjtqssulhvIh4sBBYEI8/edit?gid=0#gid=0", "Data")
+data.cv <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/data/plant_species_stability_traits_2024.csv", stringsAsFactors = T) 
+quad.data <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/data/NPP_quads_latlong_edited.csv", stringsAsFactors = T) # Has quad GPS coordinates for Bayesian analysis
+
+# Set plot theme
+theme_set(theme_bw() +
+            theme(
+              plot.background = element_blank()
+              ,panel.grid.major = element_blank()
+              ,panel.grid.minor = element_blank()
+              ,panel.background = element_blank()
+              ,axis.text.x  = element_text(vjust=0.5, size=10)
+            ))
+
+# Rename columns from species interactions data sheet
+data.intrxns %<>% 
+  rename("Legume" = "Legume? (Y/N)",
+         "LegumeSource" = "Source: Legume",
+         "Pollination" = "Pollination (W/A/WA)",
+         "PollinationGS" = "Pollination: genus or species? (G/S)",
+         "PollinationSource" = "Source: Pollination",
+         "Dispersal" = "Dispersal (W/A/WA)",
+         "DispersalGS" = "Dispersal: genus or species? (G/S)",
+         "DispersalCheekStomach" = "Dispersal: cheek, stomach, or both? (only for if source is Hope & Parmenter)",
+         "DispersalSource" = "Source: Dispersal",
+         "Outcrossing" = "Outcrossing (O/N)",
+         "OutcrossingGS" = "Outcrossing: genus or species? (G/S)",
+         "OutcrossingSource" = "Source: Outcrossing",
+         "Hybridizing" = "Hybridizing (H/N)",
+         "HybridizingGS" = "Hybridizing: genus or species? (G/S)",
+         "HybrydizingSource" = "Source: Hybridizing",
+         "NotesInteraction" = "Notes")
+
+# Create new columns for pollination and dispersal that change "WA" to "W". The logic is, if the species can be wind pollinated, it doesn't rely on other species.
+data.intrxns %<>%
+  mutate(Pollination.new = as.factor(ifelse(Pollination == "A", "A", "W")),
+         Dispersal.new = as.factor(ifelse(Dispersal == "A", "A", "W")))
+
+data.intrxns %<>% mutate_if(is.character, as.factor)
+
+length(unique(data.cv$kartez))
+
+# Merge files
+data <- left_join(data.intrxns, data.cv, by = "kartez")
+
+# Change characters to factors
+data %<>% mutate_if(is.character, as.factor)
+
+# Make sure levels are what I'm expecting
+levels(data$Legume)
+levels(data$Pollination)
+levels(data$Dispersal)
+
+# Make unique quad ID factor
+data$quad_ID <- as.factor(
+      paste(
+        data$site,
+        data$web,
+        data$transect,
+        data$treatment,
+        data$block,
+        data$plot,
+        data$subplot,
+        data$quad,
+        sep = "_"))
+
+data <- as.data.frame(data)
+```
+
+Merge quad coordinates with data
+```{r}
+quad.data$quad_ID <- as.factor(
+      paste(
+        quad.data$site,
+        quad.data$web,
+        quad.data$transect,
+        quad.data$treatment,
+        quad.data$block,
+        quad.data$plot,
+        quad.data$subplot,
+        quad.data$quad,
+        sep = "_"))
+
+colnames(data)[25] <- "row"
+data$web <- as.factor(data$web)
+data$block <- as.factor(data$block)
+data$quad <- as.factor(data$quad)
+quad.data$web <- as.factor(quad.data$web)
+quad.data$block <- as.factor(quad.data$block)
+quad.data$quad <- as.factor(quad.data$quad)
+
+data <- left_join(data, quad.data, by = c("site", "web", "transect", "block", "plot", "subplot", "quad", "treatment", "quad_ID"))
+
+length(unique(data$kartez))
+```
+
+
+
+
+# Frequentist models
+
+These models only includes legume, pollination, and dispersal for now. When we have outcrossing data, we can add it in (although I also think it makes sense to fit a separate model for outcrossing since it's not relying on a different species).
+
+## Original categories for pollination and dispersal
+
+```{r}
+### Model including all predictors
+mod.all.f <- lmer(species_CV ~ Pollination + Dispersal + Legume + (1|quad_ID) + (1|kartez), na.action = na.omit, data = data)
+Anova(mod.all.f, type = 2)
+
+# Try GPS coordinates instead of quad_ID. If I include, X, Y, and quad_ID, I get a warning that the model fails to converge (I think quad_ID overlaps too much with X and Y)
+mod.all.f.gps <- lmer(species_CV ~ Pollination + Dispersal + Legume + X + Y + (1|kartez), na.action = na.omit, data = data)
+Anova(mod.all.f.gps, type = 2)
+
+# Plot marginal effect of each predictor
+plot_model(mod.all.f, type = "pred", terms = "Pollination")
+plot_model(mod.all.f, type = "pred", terms = "Dispersal")
+plot_model(mod.all.f, type = "pred", terms = "Legume")
+
+
+### Individual models for each predictor
+mod.pol.f <- lmer(species_CV ~ Pollination + (1|quad_ID) + (1|kartez), na.action = na.omit, data = data)
+mod.disp.f <- lmer(species_CV ~ Dispersal + (1|quad_ID) + (1|kartez), na.action = na.omit, data = data)
+mod.leg.f <- lmer(species_CV ~ Legume + (1|quad_ID) + (1|kartez), na.action = na.omit, data = data)
+
+Anova(mod.pol.f, type = 2)
+Anova(mod.disp.f, type = 2)
+Anova(mod.leg.f, type = 2)
+
+# Models with GPS coordinates instead of quad_ID
+mod.pol.f.gps <- lmer(species_CV ~ Pollination + X + Y + (1|kartez), na.action = na.omit, data = data)
+mod.disp.f.gps <- lmer(species_CV ~ Dispersal + X + Y + (1|kartez), na.action = na.omit, data = data)
+mod.leg.f.gps <- lmer(species_CV ~ Legume + X + Y + (1|kartez), na.action = na.omit, data = data)
+
+Anova(mod.pol.f.gps, type = 2)
+Anova(mod.disp.f.gps, type = 2)
+Anova(mod.leg.f.gps, type = 2)
+```
+
+## Model excluding WA (for both pollination and dispersal)
+
+
+```{r}
+# I need to change the order of "Legume" levels for the plot
+data$Legume <- factor(data$Legume, levels = c("Y", "N"))
+
+### Full model ###
+mod.all.f3 <- lmer(species_CV ~ Pollination + Dispersal + Legume + (1|quad_ID) + (1|kartez), na.action = na.omit, data = data %>% filter(Pollination != "WA" & Dispersal != "WA"))
+Anova(mod.all.f3, type = 2)
+
+# With GPS coordinates instead of quad_ID
+mod.all.f3.gps <- lmer(species_CV ~ Pollination + Dispersal + Legume + X + Y + (1|kartez), na.action = na.omit, data = data %>% filter(Pollination != "WA" & Dispersal != "WA"))
+Anova(mod.all.f3.gps, type = 2)
+
+
+# Check residuals
+library(DHARMa)
+plot(simulateResiduals(mod.all.f3.gps))
+
+# Plot marginal effect of each predictor (using GPS model)
+plot_model(mod.all.f3.gps, type = "pred", terms = c("Pollination")) + 
+  scale_x_discrete(limits = c("Animal", "Wind")) +
+  labs(y = "CV of Species Biomass") 
+
+plot_model(mod.all.f3.gps, type = "pred", terms = "Dispersal") + 
+  scale_x_discrete(limits = c("Animal", "Wind")) +
+  labs(y = "CV of Species Biomass") 
+
+plot_model(mod.all.f3.gps, type = "pred", terms = "Legume") + 
+  scale_x_discrete(limits = c("Yes", "No")) +
+  labs(y = "CV of Species Biomass") 
+
+
+
+
+### Separate model for each predictor ###
+
+mod.pol.f3.gps <- lmer(species_CV ~ Pollination + X + Y + (1|kartez), na.action = na.omit, data = data %>% filter(Pollination != "WA"))
+mod.disp.f3.gps <- lmer(species_CV ~ Dispersal + X + Y + (1|kartez), na.action = na.omit, data = data %>% filter(Dispersal != "WA"))
+mod.leg.f3.gps <- lmer(species_CV ~ Legume + X + Y + (1|kartez), na.action = na.omit, data = data)
+
+Anova(mod.pol.f3.gps, type = 2)
+Anova(mod.disp.f3.gps, type = 2)
+Anova(mod.leg.f3.gps, type = 2)
+
+# Plot marginal effect of each predictor (using GPS model)
+plot.poster.pol <- plot_model(mod.pol.f3.gps, type = "pred", terms = c("Pollination")) + 
+  scale_x_discrete(limits = c("Animal", "Wind")) +
+  labs(y = "CV of Species Biomass",
+       x = "Pollination Method") 
+
+plot.poster.disp <- plot_model(mod.disp.f3.gps, type = "pred", terms = "Dispersal") + 
+  scale_x_discrete(limits = c("Animal", "Wind")) +
+  labs(y = "CV of Species Biomass",
+       x = "Dispersal Method") 
+
+plot.poster.leg <- plot_model(mod.leg.f3.gps, type = "pred", terms = "Legume") + 
+  scale_x_discrete(limits = c("Yes", "No")) +
+  labs(y = "CV of Species Biomass") 
+
+ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/model_plots_poster/plot.poster.pol.png", plot.poster.pol, dpi = 600, width = 3200, height = 1825, units = "px")
+
+ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/model_plots_poster/plot.poster.disp.png", plot.poster.disp, dpi = 600, width = 3200, height = 1825, units = "px")
+
+ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/model_plots_poster/plot.poster.leg.png", plot.poster.leg, dpi = 600, width = 3200, height = 1825, units = "px")
+
+```
+
+Try including species_mu in models to account for abundant species being more stable. I need to figure out how to model this better...
+```{r}
+### Full model with GPS coordinates ###
+
+mod.all.f3.gps.mu <- lmer(species_CV ~ Pollination + Pollination:species_mu + Dispersal + Legume + Legume:species_mu + X + Y + (1|kartez), na.action = na.omit, data = data %>% filter(Pollination != "WA" & Dispersal != "WA"))
+Anova(mod.all.f3.gps.mu, type = 2)
+
+### Separate model for each predictor ###
+
+mod.pol.f3.gps.mu <- lmer(species_CV ~ Pollination * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data %>% filter(Pollination != "WA"))
+mod.disp.f3.gps.mu <- lmer(species_CV ~ Dispersal * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data %>% filter(Dispersal != "WA"))
+mod.leg.f3.gps.mu <- lmer(species_CV ~ Legume * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data)
+
+Anova(mod.pol.f3.gps.mu, type = 2)
+Anova(mod.disp.f3.gps.mu, type = 2)
+Anova(mod.leg.f3.gps.mu, type = 2)
+
+
+# Plot interactions with species_mu
+plot_model(mod.pol.f3.gps.mu, type = "pred", terms = c("species_mu", "Pollination"))
+plot_model(mod.disp.f3.gps.mu, type = "pred", terms = c("species_mu", "Dispersal"))
+plot_model(mod.leg.f3.gps.mu, type = "pred", terms = c("species_mu", "Legume")) # This y-axis is crazy... I think it's because of the nonlinear relationship - see below.
+
+ggplot(data, aes(x = species_mu, y = log(species_CV), color = Legume)) +
+  geom_point(alpha = 1/10) +
+  geom_smooth()
+```
+
+
+
+
+## Simplified categories for pollination and dispersal
+
+Here, species that are animal and wind pollinated are treated as wind pollinated, because they don't rely on another species if they can be pollinated by wind.
+```{r}
+### Model including all predictors
+mod.all.f2 <- lmer(species_CV ~ Pollination.new + Dispersal.new + Legume + (1|quad_ID) + (1|kartez), na.action = na.omit, data = data)
+Anova(mod.all.f2, type = 2)
+
+# With GPS coordinates instead of quad_ID
+mod.all.f2.gps <- lmer(species_CV ~ Pollination.new + Dispersal.new + Legume + X + Y + (1|kartez), na.action = na.omit, data = data)
+Anova(mod.all.f2.gps, type = 2)
+
+# Plot marginal effect of each predictor
+plot_model(mod.all.f2.gps, type = "pred", terms = "Pollination.new")
+plot_model(mod.all.f2.gps, type = "pred", terms = "Dispersal.new")
+plot_model(mod.all.f2.gps, type = "pred", terms = "Legume")
+
+
+### Separate model for each predictor
+mod.pol.f2.gps <- lmer(species_CV ~ Pollination.new + X + Y + (1|kartez), na.action = na.omit, data = data)
+mod.disp.f2.gps <- lmer(species_CV ~ Dispersal.new + X + Y + (1|kartez), na.action = na.omit, data = data)
+mod.leg.f2.gps <- lmer(species_CV ~ Legume + X + Y + (1|kartez), na.action = na.omit, data = data)
+
+Anova(mod.pol.f2.gps, type = 2)
+Anova(mod.disp.f2.gps, type = 2)
+Anova(mod.leg.f2.gps, type = 2)
+
+
+### Make emmeans plots for poster
+
+# Pollination
+poll.new.emm <- summary(emmeans(mod.all.f2, ~ Pollination.new))
+
+pollination.emm.plot <- ggplot(poll.new.emm, aes(x = Pollination.new, y = emmean)) +
+  geom_point(position = position_dodge(0.5),
+             stat = "identity") +
+  geom_errorbar(
+    aes(ymin = emmean - SE, ymax = emmean + SE),
+    width = 0.2,
+    position = position_dodge(0.5)) +
+  labs(x = "Pollination Method",
+       y = "CV of Species Biomass") +
+  scale_x_discrete(labels = c("Animal", "Wind"))
+pollination.emm.plot
+
+ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/emm_plots/pollination.emm.plot.png", pollination.emm.plot, dpi = 600, width = 3200, height = 1700, units = "px")
+
+# Dispersal
+disp.new.emm <- summary(emmeans(mod.all.f2, ~ Dispersal.new))
+
+dispersal.emm.plot <- ggplot(disp.new.emm, aes(x = Dispersal.new, y = emmean)) +
+  geom_point(position = position_dodge(0.5),
+             stat = "identity") +
+  geom_errorbar(
+    aes(ymin = emmean - SE, ymax = emmean + SE),
+    width = 0.2,
+    position = position_dodge(0.5)) +
+  labs(x = "Dispersal Method",
+       y = "CV of Species Biomass") +
+  scale_x_discrete(labels = c("Animal", "Wind"))
+dispersal.emm.plot
+
+ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/emm_plots/dispersal.emm.plot.png", dispersal.emm.plot, dpi = 600, width = 3200, height = 1700, units = "px")
+
+# Legumes
+leg.emm <- summary(emmeans(mod.all.f2, ~ Legume))
+
+legume.emm.plot <- ggplot(leg.emm, aes(x = Legume, y = emmean)) +
+  geom_point(position = position_dodge(0.5),
+             stat = "identity") +
+  geom_errorbar(
+    aes(ymin = emmean - SE, ymax = emmean + SE),
+    width = 0.2,
+    position = position_dodge(0.5)) +
+  labs(x = "Legume",
+       y = "CV of Species Biomass") +
+  scale_x_discrete(limits = c("Y", "N"),
+                   labels = c("Yes", "No"))
+legume.emm.plot
+
+ggsave("~/GitHub/SEV_Species_Interactions_Stability/reports/emm_plots/legume.emm.plot.png", legume.emm.plot, dpi = 600, width = 3200, height = 1700, units = "px")
+
+
+
+### Individual models for each predictor
+mod.pol.f2 <- lmer(species_CV ~ Pollination.new + (1|quad_ID) + (1|kartez), na.action = na.omit, data = data)
+mod.disp.f2 <- lmer(species_CV ~ Dispersal.new + (1|quad_ID) + (1|kartez), na.action = na.omit, data = data)
+
+Anova(mod.pol.f2, type = 2)
+Anova(mod.disp.f2, type = 2)
+
+
+
+```
+
+
+
+# Bayesian models
+
+bf(CV ~ pollination + dispersal + legume + gp(latitude, longitude) + (1|gr(taxon.new, cov = A))
+
+<br/>
+
+For now I'm going to include quad_ID as a factor, rather than GPS coordinates. Update when I learn how to from Ara.
+<br/>
+Prep tree
+```{r, eval=F}
+# Tell r to use as many cores as exist on the computer
+options(mc.cores = parallel::detectCores())
+
+tr <- read.tree("~/GitHub/SEV_Species_Interactions_Stability/data/sev_traits_tree101.tre")
+
+# Visualize tree 
+par(mar = c(1, 1, 2, 1), + 0.1)
+plot.phylo(tr, type = "phylogram", direction = "right", show.tip.label = T, use.edge.length = FALSE, cex = 0.6, label.offset = 1)
+add.scale.bar(cex = 0.7)
+nodelabels(tr$node.label, font = 2, bg = "white", frame = "r", cex = 0.5)
+
+# This is the final tree Tim Farkas used
+plotTree(tr)
+
+# adjust branch lengths
+tree2 <- compute.brlen(tr, method="Grafen")  # set branch lengths = Grafen
+tree2$edge.length
+plot(tree2)
+
+# Check that tree and data have the same species -- Nope! Remove some species from the tree, and the one "Sporobolus_sp." from my means data
+# Note: setdiff returns items in the first set, but not in the second set.  Thus set order matters.
+intersect(unique(data$taxon.new), tree2$tip.label)
+setdiff(unique(data$taxon.new), tree2$tip.label)
+setdiff(tree2$tip.label, unique(data$taxon.new))
+
+# Create a new dataset for Bayesian analyses that excludes "Sporobolus_sp."
+data.bayes <-  data %>%
+  filter(taxon.new != "Sporobolus_sp.")
+
+# Drop species from tree that I'm not using
+tree3 <- drop.tip(tree2, setdiff(tree2$tip.label, unique(data.bayes$taxon.new)))
+
+# Check that there's no differences
+setdiff(unique(data.bayes$taxon.new), tree3$tip.label) 
+setdiff(tree3$tip.label, unique(data.bayes$taxon.new))
+
+#resolve multifurcations with branches of zero length
+tree4 <- multi2di(tree3)   
+
+# Save tree
+write.nexus(tree4, file = "~/GitHub/SEV_Species_Interactions_Stability/data/tree4.nex") #Nexus format
+
+# Save data
+write.csv(data.bayes, "~/GitHub/SEV_Species_Interactions_Stability/data/data.bayes.csv")
+
+
+
+
+# Construct a covariance matrix of species
+A <- ape::vcv.phylo(tree4)
+
+# Make sure the rownames of A match the species in my df
+# Note: setdiff returns items in the first set, but not in the second set.
+setdiff(data.bayes$taxon.new, rownames(A)) 
+setdiff(rownames(A), data.bayes$taxon.new)
+
+# Save and read in phylogenetic data
+phylo_list <- list(A = A)
+dput(phylo_list, "phylo_list.txt")
+phylo_list_r <- dget("phylo_list.txt")
+```
+
+Fit Bayesian model. I'm going to do the simplified one first.
+```{r, eval=F}
+brms.mod.all2 <- bf(species_CV ~ (1|Pollination.new) + (1|Dispersal.new) + (1|Legume) + (1|quad_ID) + (1|gr(taxon.new, cov = A)))
+brms.mod.all2
+
+# Set our own priors
+prior.all2 <- c(
+  set_prior("student_t(7, 0, 2.5)", class = "sd", group = "Pollination.new"),
+  set_prior("student_t(7, 0, 2.5)", class = "sd", group = "Dispersal.new"),
+  set_prior("student_t(7, 0, 2.5)", class = "sd", group = "Legume"),
+  set_prior("student_t(7, 0, 2.5)", class = "sd", group = "quad_ID"))
+prior.all2
+
+# Run the model. This just stalls out on the warmup. Need to ask Ara why.
+k_fit_brms.all2 <- brm(brms.mod.all2, 
+                  data = data.bayes, data2 = phylo_list_r,
+                  family = "gaussian", prior = prior.all2,
+                  chains = 4, cores = 8, iter = 2000, backend = "cmdstanr",
+                  control = list(adapt_delta = 0.99, max_treedepth = 12))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,127 @@
+---
+title: "Stability_script_for_Kamren"
+author: "Lana Bolin"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: yes
+---
+
+This script imports data that have been cleaned and merged, so Kamren can fit some models.
+
+# Setup
+
+```{r, message=F}
+# Clear environment
+rm(list = ls())
+
+# Load libraries
+libraries <- c("magrittr", "lme4", "car", "emmeans", "MuMIn", "scales", "sjPlot", "vegan", "ape", "phytools", "devtools", "ggbiplot", "tidyverse", "googlesheets4", "reshape2")
+invisible(lapply(libraries, require, character.only = T))
+
+# Set working directory. Change this to your working directory!
+setwd("~/GitHub/SEV_Species_Interactions_Stability")
+
+# Load the dataset. Each row is a quadrat
+data.2012 <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/data/data.2012.csv", stringsAsFactors = T) 
+```
+
+
+# Models
+
+## Using original categories (includes W/A pollinated and dispersed species)
+
+### Example sub-sub-header
+
+```{r}
+### Full model
+mod.all.orig <- lmer(species_CV ~ Pollination + Dispersal + Legume + X + Y + (1|kartez), na.action = na.omit, data = data.2012)
+
+Anova(mod.all.orig, type = 2)
+
+#### Individual models for each predictor
+
+# Pollination - call this model "mod.pol.orig"
+
+
+# Dispersal - call this model "mod.disp.orig"
+
+
+# Legume - call this model "mod.leg.orig"
+
+
+### Plot
+plot_model(mod.all.orig, type = "pred", terms = "Pollination")
+```
+
+I can type outside of the gray!
+
+## Excluding WA (for both pollination and dispersal)
+
+```{r}
+### Full model
+mod.all.noWA <- lmer(species_CV ~ Pollination + Dispersal + Legume + X + Y + (1|kartez), na.action = na.omit, data = data.2012 %>% filter(Pollination != "WA" & Dispersal != "WA"))
+
+Anova(mod.all.noWA, type = 2)
+
+#### Individual models for each predictor
+
+# Pollination
+
+
+# Dispersal
+
+
+# Legume
+
+
+### Plot
+plot_model(mod.all.noWA, type = "pred", terms = "Pollination")
+```
+
+
+## Using simplified categories for pollination and dispersal (WA is recast as W)
+
+```{r}
+### Full model. The column names for the simplified pollination and dispersal variables are "Pollination.new" and "Dispersal.new".
+
+
+
+#### Individual models for each predictor
+
+# Pollination
+
+
+# Dispersal
+
+
+# Legume
+
+
+```
+
+
+
+## Fit a model that includes the Pollination x Dispersal interaction
+
+```{r}
+
+```
+
+
+
+## Fit a model that includes the Pollination x LifeHistory interaction
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+

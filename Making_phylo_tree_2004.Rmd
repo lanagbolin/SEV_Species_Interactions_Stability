@@ -4,12 +4,6 @@ author: "Lana Bolin"
 date: "`r Sys.Date()`"
 output: html_document
 ---
----
-title: "Making_phylo_tree"
-author: "Lana Bolin"
-date: "`r Sys.Date()`"
-output: html_document
----
 
 This script builds a phylogenetic tree of the species in Kamren's dataset (data.2004.pic). 
 
@@ -26,6 +20,8 @@ This script builds a phylogenetic tree of the species in Kamren's dataset (data.
 rm(list = ls())
 
 data.2004.pic <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/data/data.2004.pic.csv")
+
+length(unique(data.2004.pic$kartez)) # 143 taxa
 
 # Load libraries
 libraries <- c("tidyverse", "U.Taxonstand", "pez", "vegan", "picante", "phytools", "lattice", "Hmisc", "readxl", "ggtree", "phylotools", "readxl", "WorldFlora", "stringr", "magrittr", "car")
@@ -45,13 +41,13 @@ megaphylogeny$tip.label <- str_remove_all(megaphylogeny$tip.label, " ")
 # Ecinomastus_intertextus. Echinocactus is a synonym and is in the megaphylogeny, but the species intertextus is not. Change to "Echinocactus_intertextus.
 # Escobaria_vivipara. Coryphantha is a genus synonym and is in the megaphylogeny, but the species vivipara is not. Change to Coryphantha_vivipara.
 
-data.2004.pic %<>% dplyr::mutate(taxon.new = ifelse(taxon.new == "Opuntia_macrocenta", "Opuntia_macrocentra", taxon.new),
-                                 taxon.new = ifelse(taxon.new == "Lesquerella_fendleri", "Physaria_fendleri", taxon.new),
-                                 taxon.new = ifelse(taxon.new == "Ecinomastus_intertextus", "Echinocactus_intertextus", taxon.new),
-                                 taxon.new = ifelse(taxon.new == "Escobaria_vivipara", "Coryphantha_vivipara", taxon.new),
-                                 taxon.new = ifelse(taxon.new == "Mahonia_haematocarpa", "Berberis_haematocarpa", taxon.new),
-                                 taxon.new = ifelse(taxon.new == "Arabis_fendleri", "Boechera_fendleri", taxon.new),
-                                 taxon.new = ifelse(taxon.new == "Cymopterus_acaulis", "Cymopterus_glomeratus", taxon.new))
+#data.2004.pic %<>% dplyr::mutate(taxon.new = ifelse(taxon.new == "Opuntia_macrocenta", "Opuntia_macrocentra", taxon.new),
+#                                 taxon.new = ifelse(taxon.new == "Lesquerella_fendleri", "Physaria_fendleri", taxon.new),
+#                                 taxon.new = ifelse(taxon.new == "Ecinomastus_intertextus", "Echinocactus_intertextus", taxon.new),
+#                                 taxon.new = ifelse(taxon.new == "Escobaria_vivipara", "Coryphantha_vivipara", taxon.new),
+#                                 taxon.new = ifelse(taxon.new == "Mahonia_haematocarpa", "Berberis_haematocarpa", taxon.new),
+#                                 taxon.new = ifelse(taxon.new == "Arabis_fendleri", "Boechera_fendleri", taxon.new),
+#                                 taxon.new = ifelse(taxon.new == "Cymopterus_acaulis", "Cymopterus_glomeratus", taxon.new))
 
 # make list of all species in megaphylogeny
 megaphylogeny_spp <- megaphylogeny$tip.label #extract a species list from phylogeny
@@ -61,13 +57,15 @@ megaphylogeny_genera <- read.csv("~/GitHub/SEV_Species_Interactions_Stability/da
 # Remove rows where taxon.new ends with "_NA" (where the species is unidentified). ADD THESE BACK IN DURING THE CONGENERIC MERGE.
 data.2004.pic.noNA <- data.2004.pic[!grepl("_NA$", data.2004.pic$taxon.new), ]
 
+length(unique(data.2004.pic.noNA$kartez)) # None have NA
+
 # Genera removed because of NA
 setdiff(data.2004.pic$taxon.new, data.2004.pic.noNA$taxon.new)
 
 # Make lists of my taxa that do and don't match megaphylogeny
 # Note: setdiff returns items in the first set, but not in the second set.  Thus set order matters.
-matched <- intersect(data.2004.pic.noNA$taxon.new, megaphylogeny$tip.label) # 76 matches
-unmatched <- setdiff(data.2004.pic.noNA$taxon.new, megaphylogeny$tip.label) # 78 non-matches
+matched <- intersect(data.2004.pic.noNA$taxon.new, megaphylogeny$tip.label) # 71 matches
+unmatched <- setdiff(data.2004.pic.noNA$taxon.new, megaphylogeny$tip.label) # 71 non-matches
 ```
 
 Find synonyms in TPL database, add them to matches
@@ -84,7 +82,7 @@ rm(dat1, dat2, dat3)
 unmatched2 <- gsub('_', ' ', unmatched) #replace Genus_species with Genus species for purposes of accessing TPL
 unmatchedTPL.noNA <- nameMatch(spList=unmatched2, spSource=database, max.distance=1, Append=FALSE)
 
-# Look at species that used fuzzy matching algorithm
+# Look at species that used fuzzy matching algorithm - 5 rows
 unmatchedTPL.noNA %>% dplyr::filter(Fuzzy == TRUE)
 
 # "Submitted_Name" is the name in my data
@@ -109,32 +107,45 @@ unmatchedTPL.noNA.syns <- unmatchedTPL.noNA %>% dplyr::filter(!is.na(New_name))
 unmatchedTPL.noNA.syns$New_name
 
 # Update the list of matches - combine original matches ("matched") with species that match after looking for synonyms 
-matched.syn <- union(matched, intersect(unmatchedTPL.noNA.syns$Accepted_SPNAME2, megaphylogeny$tip.label)) # 94 matches (added 17 to the original 76 matches)
+matched.syn <- union(matched, intersect(unmatchedTPL.noNA.syns$Accepted_SPNAME2, megaphylogeny$tip.label)) # 88 matches (added 17 to the original 71 matches)
 
-# Update list of TPL names of spp STILL not on megaphylogeny. WHY ISN'T THIS 61? (78 original unmatched, plus the 17 new matches of synonyms) (There were 154 non-NA species. 93 now match the tree. So there should be 61 umatched. Why are there only 60?)
-unmatched.syn <- setdiff(unmatchedTPL.noNA$Accepted_SPNAME2, megaphylogeny$tip.label) # 56
+# Update list of TPL names of spp STILL not on megaphylogeny. 
+unmatched.syn <- setdiff(unmatchedTPL.noNA$Accepted_SPNAME2, megaphylogeny$tip.label) # 53
 ```
+
+I moved this here for now so I can get the number of species still not included after using the The Plant List to find synonyms.
+```{r}
+data.2004.pic %<>% dplyr::mutate(taxon.new = ifelse(taxon.new == "Opuntia_macrocenta", "Opuntia_macrocentra", taxon.new),
+                                 taxon.new = ifelse(taxon.new == "Lesquerella_fendleri", "Physaria_fendleri", taxon.new),
+                                 taxon.new = ifelse(taxon.new == "Ecinomastus_intertextus", "Echinocactus_intertextus", taxon.new),
+                                 taxon.new = ifelse(taxon.new == "Escobaria_vivipara", "Coryphantha_vivipara", taxon.new),
+                                 taxon.new = ifelse(taxon.new == "Mahonia_haematocarpa", "Berberis_haematocarpa", taxon.new),
+                                 taxon.new = ifelse(taxon.new == "Arabis_fendleri", "Boechera_fendleri", taxon.new),
+                                 taxon.new = ifelse(taxon.new == "Cymopterus_acaulis", "Cymopterus_glomeratus", taxon.new))
+```
+
+
 
 Some spp that are still unmatched (i.e., are in unmatched.syn) are in TPL genera not present in Zanne tree, so they will not be added in congeneric.merge (below). So, recover the original (non-TPL) generic names of these species to try to merge them as well.
 ```{r}
 # Subset unmatchedTPL to rows of unmatched species
-unmatchedTPL.unmatched.syn <- unmatchedTPL.noNA[unmatchedTPL.noNA$Accepted_SPNAME2 %in% unmatched.syn, ]  # 60 rows
+unmatchedTPL.unmatched.syn <- unmatchedTPL.noNA[unmatchedTPL.noNA$Accepted_SPNAME2 %in% unmatched.syn, ]  # 53 rows
 
 # Extract TPL genus names for unmatched.syn vector
-unmatched.syn.genera <- unmatchedTPL.unmatched.syn$New.Genus   # 60
+unmatched.syn.genera <- unmatchedTPL.unmatched.syn$New.Genus   # 53
 
 # Vector of TPL genera in unmatched.syn that are NOT present in Zanne tree
-unmatched.syn.noTree.genera <- setdiff(unmatched.syn.genera, megaphylogeny_genera)  # 48
+unmatched.syn.noTree.genera <- setdiff(unmatched.syn.genera, megaphylogeny_genera)  # 42
 
-# Subset unmatched TPL to rows of genera not on Zanne tree (60 rows, 48 genera)
+# Subset unmatched TPL to rows of genera not on Zanne tree (53 rows, 41 genera)
 unmatchedTPL.unmatched.syn.noTree.genera <- unmatchedTPL.noNA[unmatchedTPL.noNA$New.Genus %in% unmatched.syn.noTree.genera, ] 
 
 # List of original (non-TPL) names of species in TPL genera NOT present in Zanne tree
-unmatched.orig.names <- unmatchedTPL.unmatched.syn.noTree.genera$Submitted_Name2 %>% sort()   # 60 
-unmatched.orig.genera <- unmatchedTPL.unmatched.syn.noTree.genera$Submitted_Genus %>% unique() %>% sort() # 47
+unmatched.orig.names <- unmatchedTPL.unmatched.syn.noTree.genera$Submitted_Name2 %>% sort()   # 53 
+unmatched.orig.genera <- unmatchedTPL.unmatched.syn.noTree.genera$Submitted_Genus %>% unique() %>% sort() # 41
 
-# Combined list of unmatched synonyms and original spp NOT in Zanne tree. 70 species (many are redundant but a few aren't - see setdiff lines below for non-redundant taxa)
-unmatched.all <- union(unmatched.syn, unmatched.orig.names) %>% sort()  # 63
+# Combined list of unmatched synonyms and original spp NOT in Zanne tree. 62 species (many are redundant but a few aren't - see setdiff lines below for non-redundant taxa)
+unmatched.all <- union(unmatched.syn, unmatched.orig.names) %>% sort()  # 62
 
 setdiff(unmatched.syn, unmatched.orig.names)
 setdiff(unmatched.orig.names, unmatched.syn)
@@ -149,7 +160,7 @@ megaphylogeny_conmerge <- congeneric.merge(as.character(unmatched.all), tree = m
 # Note that the pruned tree will be a combo of my names and TPL names
 pruned.tree <- drop.tip(megaphylogeny_conmerge, setdiff(megaphylogeny_conmerge$tip.label, union(matched.syn, unmatched.all)))
 
-length(pruned.tree$tip.label) # 150
+length(pruned.tree$tip.label) # 141
 
 # SUMMARY OF TAXON MATCHING
 cat(length(unmatched)+length(matched), "taxa in my list") 
@@ -286,6 +297,7 @@ new.pic.data <- data.2004.pic.noNA %>% filter(!taxon.new %in% SpToRemove)
 
 ```{r}
 temp.tree <- drop.tip(temp.tree, setdiff(temp.tree$tip.label, data.2004.pic.noNA$taxon.new))
+length(temp.tree$tip.label)
 ```
 
 
@@ -303,10 +315,6 @@ write.csv(new.pic.data, "~/GitHub/SEV_Species_Interactions_Stability/data/phylo_
 
 
 ```
-
-
-
-
 
 
 

@@ -1,0 +1,4461 @@
+---
+title: "Species_Interactions_stability_analyses"
+author: "Lana Bolin"
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: yes
+---
+
+Analyses for "Animal-pollinated plants are more temporally variable than wind-pollinated plants" by Lana G. Bolin, Kamren Decker, Sharon Y. Strauss, and Jennifer A. Rudgers.
+
+# Setup
+
+Load libraries and data
+```{r, message=F, warning=F}
+# Clear environment
+rm(list = ls())
+
+# Load libraries
+libraries <- c("magrittr", "lme4", "car", "emmeans", "MuMIn", "sjPlot", "ape",  "phytools", "googlesheets4", "brms", "reshape2", "DHARMa", "ggeffects", "tidybayes", "posterior", "phytools", "ggtree", "nlme")
+invisible(lapply(libraries, require, character.only = T))
+library(tidyverse)
+
+# Set plot theme
+theme_set(theme_bw() +
+            theme(
+              plot.background = element_blank()
+              ,panel.grid.major = element_blank()
+              ,panel.grid.minor = element_blank()
+              ,panel.background = element_blank()
+              ,axis.text.x  = element_text(vjust=0.5, size=10)
+              ,axis.text.y  = element_text(vjust=0.5, size=10)
+            ))
+
+# Load the dataset
+data.2004 <- read.csv("./data/sp_interactions_stability_data.csv")
+```
+
+Prep data
+```{r}
+# Calculate species_CV for each species in each quad, and remove species that were never observed
+data.2004 %<>%
+    mutate(biomass.sum = apply(.[(10:29)], 1, sum, na.rm=T),
+           species_mu = apply(.[(10:29)], 1, mean, na.rm=T),
+           species_sd = apply(.[(10:29)], 1, sd, na.rm=T),
+           species_CV = species_sd/species_mu) %>%
+    filter(biomass.sum > 0)
+
+# Sum the biomass for each species across all sites and quadrats within each year. This has 1 row per species, and a column for each year.
+yearsums.2004 <- data.2004 %>% 
+  group_by(kartez) %>%
+  summarise(across(c(X2004, X2005, X2006, X2007, X2008, X2009, X2010, X2011, X2012, X2013, X2014, X2015, X2016, X2017, X2018, X2019, X2020, X2021, X2022, X2023), sum, na.rm=T))
+
+# Count the number of years each species has non-zero biomass across the SEV. Add as column to yearsums
+yearsums.2004$n.nonzero.years <- rowSums(yearsums.2004[, 2:21] != 0)
+
+# Filter to years with at least 3 years of non-zero biomass
+ThreePlus.2004 <- yearsums.2004 %>%
+  filter(n.nonzero.years >=3) 
+
+data.2004 %<>%
+  filter(kartez %in% ThreePlus.2004$kartez)
+```
+
+
+Data summaries
+```{r}
+# Number of species
+length(unique(data.2004$kartez))
+
+# Number of sites, and quads per site. 4 ecosystems (the 4 core sites) and 2 ecotones (grass-grass and grass-shrub). 
+data.2004 %>% group_by(site) %>% summarise(n.quads = length(unique(quad_ID)))
+
+# Number of quads
+length(unique(data.2004$quad_ID))
+
+
+
+# Number of species with data for each species interaction
+data.2004 %>%
+  distinct(kartez, Pollination.new) %>%
+  group_by(Pollination.new) %>%
+  summarise(n = n())
+
+data.2004 %>% 
+  distinct(kartez, Dispersal.new) %>%
+  group_by(Dispersal.new) %>%
+  summarise(n = n())
+
+# Number of annuals vs. perennials
+data.2004 %>% 
+  distinct(kartez, LifeHistory) %>%
+  group_by(LifeHistory) %>%
+  summarise(n = n())
+
+# Breakdown of pollination strategy by annual/perennial 
+LHxPol <- data.2004 %>% 
+  distinct(kartez, LifeHistory, Pollination.new) %>%
+  filter(kartez %in% data.2004$kartez) %>%
+  group_by(LifeHistory, Pollination.new) %>%
+  summarise(n = n())
+LHxPol
+
+  # % of annuals that are animal-pollinated 
+  LHxPol[[1, 3]]/(LHxPol[[1, 3]] + LHxPol[[2, 3]]) * 100
+  
+  # % of perennials that are animal-pollinated
+  LHxPol[[4, 3]]/(LHxPol[[4, 3]] + LHxPol[[5, 3]]) * 100
+  
+# Breakdown of dispersal strategy by annual/perennial
+LH.Disp <- data.2004 %>% 
+  distinct(kartez, LifeHistory, Dispersal.new) %>%
+  group_by(LifeHistory, Dispersal.new) %>%
+  summarise(n = n())
+LH.Disp
+
+  # % of annuals that are animal-dispersed 
+  LH.Disp[[1, 3]]/(LH.Disp[[1, 3]] + LH.Disp[[2, 3]]) * 100
+  
+  # % of perennials that are animal-dispersed 
+  LH.Disp[[4, 3]]/(LH.Disp[[4, 3]] + LH.Disp[[5, 3]]) * 100
+
+# Breakdown of pollination strategy by grass/non-grass
+FG.Pol <- data.2004 %>% 
+  distinct(kartez, FunctionalGroup, Pollination.new) %>%
+  group_by(FunctionalGroup, Pollination.new) %>%
+  summarise(n = n())
+FG.Pol
+  
+# Breakdown of dispersal strategy by grass/non-grass
+FG.Disp <- data.2004 %>% 
+  distinct(kartez, FunctionalGroup, Dispersal.new) %>%
+  group_by(FunctionalGroup, Dispersal.new) %>%
+  summarise(n = n())
+FG.Disp
+  
+  # % of grasses that are animal-dispersed
+  FG.Disp[[4, 3]]/(FG.Disp[[4, 3]] + FG.Disp[[5, 3]]) * 100
+
+  # % of non-grasses that are animal-dispersed
+  (FG.Disp[[1, 3]] + FG.Disp[[6, 3]])/(FG.Disp[[1, 3]] + FG.Disp[[2, 3]] + FG.Disp[[6, 3]] + FG.Disp[[7, 3]]) * 100
+
+# How many species had genus-level pollination data?
+data.2004 %>%
+  group_by(kartez) %>%
+  filter(row_number() == 1) %>%
+  group_by(PollinationGS) %>%
+  summarise(n = n())
+
+# How many species had genus-level dispersal data?
+data.2004 %>%
+  group_by(kartez) %>%
+  filter(row_number() == 1) %>%
+  group_by(DispersalGS) %>%
+  summarise(n = n())
+
+# How many families are in the dataset?
+families <- data.2004 %>%
+  group_by(family) %>% 
+  dplyr::summarise(n = n()) 
+nrow(families)
+```
+
+Prep data for brms models
+```{r}
+PIC.data <- data.2004 %>%
+  # Remove space from all species names
+  mutate(taxon.new = str_remove_all(taxon.new, " ")) %>% 
+  # Fix Opuntia macrocenta typo
+  mutate(taxon.new = ifelse(taxon.new == "Opuntia_macrocenta", "Opuntia_macrocentra", taxon.new)) %>%
+  # Remove taxa ending in "_NA"
+  filter(!grepl("_NA$", taxon.new))
+```
+
+
+How much of the total plant biomass in the system is represented by the focal set?  
+```{r}
+mass <- read.csv("./data/sev331_quadrat_plant_species_biomass.csv")
+
+# Make unique quad_ID
+mass$quad_ID <- as.factor(
+      paste(
+        mass$site,
+        mass$web,
+        mass$transect,
+        mass$treatment,
+        mass$block,
+        mass$plot,
+        mass$subplot,
+        mass$quad,
+        sep = "_"))
+
+# Filter to the same years, quads, season, and sites
+mass.filt <- mass %>% 
+  filter(year %in% 2004:2023) %>%
+  filter(quad_ID %in% data.2004$quad_ID) %>%
+  filter(season == "fall") %>%
+  filter(site %in% data.2004$site)
+
+# Focal set total biomass
+focal.sum <- sum(data.2004$biomass.sum)
+
+# Total biomass of all plants
+total.sum <- sum(mass.filt$biomass.BM)
+
+# Percent of total biomass represented by our focal set
+focal.sum / total.sum * 100
+```
+
+
+
+# Plant temporal variability models
+
+## Main model
+
+```{r, message=F}
+# Scale latitude and longitude
+data.2004 %<>%
+  mutate(X_sc = scale(X),
+         Y_sc = scale(Y))
+
+# Pollination (Table S1)
+mod.pol <- lmer(species_CV ~ Pollination.new + X_sc + Y_sc + (1|kartez), na.action = na.omit, data = data.2004 %>% filter(kartez != "CHER2")) # CHER2 only has family-level pollination data 
+Anova(mod.pol, type = 2)
+
+# Dispersal (Table S6)
+mod.disp <- lmer(species_CV ~ Dispersal.new + X_sc + Y_sc + (1|kartez), na.action = na.omit, data = data.2004)
+Anova(mod.disp, type = 2)
+
+
+### Effect sizes (% increase for animal-pollinated or -dispersed)
+
+# Pollination
+pol.emm <- summary(emmeans(mod.pol, pairwise ~ Pollination.new))
+(pol.emm$emmeans[1, 2] - pol.emm$emmeans[2, 2]) / pol.emm$emmeans[2, 2] * 100
+
+# Dispersal
+disp.emm <- summary(emmeans(mod.disp, pairwise ~ Dispersal.new))
+(disp.emm$emmeans[1, 2] - disp.emm$emmeans[2, 2]) / disp.emm$emmeans[2, 2] * 100
+
+
+### Plot marginal effect of each predictor
+
+## Pollination
+
+# Get predictions
+pred_pol <- ggpredict(mod.pol, terms = "Pollination.new")
+
+# Figure 1A
+Pol.new.plot <- ggplot(pred_pol, aes(x = x, y = predicted, color = x)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high),
+                width = 0.05) +
+  scale_x_discrete(
+    limits = c("A", "W"),
+    labels = c("Animal", "Wind")
+  ) +
+  scale_color_manual(
+    values = c("A" = "red", "W" = "blue"),
+    labels = c("A" = "Animal", "W" = "Wind")
+  ) +
+  labs(
+    y = "Temporal variability (biomass CV)",
+    x = "Pollination strategy",
+    color = "Pollination"
+  ) +
+  ylim(c(2.75, 3.7)) +
+  theme(legend.position = "none")
+Pol.new.plot
+
+
+## Dispersal
+
+# Get predictions
+pred_disp <- ggpredict(mod.disp, terms = "Dispersal.new")
+
+# Figure 1B
+Disp.new.plot <- ggplot(pred_disp, aes(x = x, y = predicted, color = x)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high),
+                width = 0.05) +
+  scale_x_discrete(
+    limits = c("A", "W"),
+    labels = c("Animal", "Wind")
+  ) +
+  scale_color_manual(
+    values = c("A" = "darkgreen", "W" = "orange"),
+    labels = c("A" = "Animal", "W" = "Wind")
+  ) +
+  labs(
+    y = "Temporal variability (biomass CV)",
+    x = "Dispersal strategy",
+    color = "Dispersal"
+  ) +
+  ylim(c(2.75, 3.7)) +
+  theme(legend.position = "none")
+Disp.new.plot
+```
+
+
+## Only including species for which we have species-level info
+
+```{r}
+# Filter to species for which we have species-level info
+data.2004.pol.s <- data.2004 %>%
+  filter(PollinationGS == "S")
+
+data.2004.disp.s <- data.2004 %>%
+  filter(DispersalGS == "S")
+
+# Pollination (Table S2)
+mod.pol.s <- lmer(species_CV ~ Pollination.new + X + Y + (1|kartez), na.action = na.omit, data = data.2004.pol.s)
+Anova(mod.pol.s, type = 2)
+
+# Dispersal (Table S7)
+mod.disp.s <- lmer(species_CV ~ Dispersal.new + X + Y + (1|kartez), na.action = na.omit, data = data.2004.disp.s)
+Anova(mod.disp.s, type = 2)
+
+# Percent increase for marginally significant dispersal effect
+disp.s.emm <- summary(emmeans(mod.disp.s, pairwise ~ Dispersal.new))
+(disp.s.emm$emmeans[1, 2] - disp.s.emm$emmeans[2, 2]) / disp.s.emm$emmeans[2, 2] * 100
+```
+
+## Pollination x LifeHistory interaction
+
+```{r}
+# Pollination (Table S4)
+mod.pol.lhist <- lmer(species_CV ~ Pollination.new * LifeHistory + X + Y + (1|kartez), na.action = na.omit, data = data.2004)
+Anova(mod.pol.lhist, type = 2)
+
+# Figure 1A (inset)
+plot.polxLH <- plot_model(mod.pol.lhist, type = "pred", terms = c("Pollination.new", "LifeHistory"), dodge = 0.4) +
+  scale_x_discrete(limits = c("A", "W"),
+                   labels = c("Animal", "Wind")) +
+  scale_color_manual(
+    values = c("annual" = "black", "perennial" = "darkgray"),  # or whichever colors you want
+    labels = c("annual" = "Annual", "perennial" = "Perennial")
+  ) +
+  labs(y = "Temporal variability (biomass CV)", 
+       x = "Pollination strategy",
+       color = "Life history") +
+  theme(
+  axis.title = element_text(size = 16),
+  axis.text  = element_text(size = 14),
+  axis.text.x = element_text(size = 14)
+)
+plot.polxLH
+
+# How many perennial wind-pollinated species are grasses? 22/28 species are grasses
+data.2004 %>%
+  filter(LifeHistory == "perennial", Pollination.new == "W") %>%
+  distinct(kartez, FunctionalGroup) %>%
+  summarise(
+    n_grass = sum(FunctionalGroup == "grass"),
+    n_species = n(),
+    prop_grass = n_grass / n_species
+  )
+```
+
+## Include mean abundance
+
+```{r, warning=F}
+# Pollination (Table S3)
+mod.pol.mu <- lmer(species_CV ~ Pollination.new * species_mu + X + Y + (1|kartez), na.action = na.omit, data = data.2004)
+Anova(mod.pol.mu, type = 2)
+```
+
+
+## Drop grasses from model
+
+```{r, message=F}
+data.2004.nograss <- data.2004 %>%
+  filter(!FunctionalGroup %in% c("g", "grass"))
+
+# Pollination (Table S5)
+mod.pol.nograss <- lmer(species_CV ~ Pollination.new + X + Y + (1|kartez), na.action = na.omit, data = data.2004.nograss %>% filter(kartez != "CHER2")) # Filter out the species that we only have family-level data for
+Anova(mod.pol.nograss, type = 2)
+
+# % increase for marginally significant pollinator effect
+pol.nograss.emm <- summary(emmeans(mod.pol.nograss, pairwise ~ Pollination.new))
+(pol.nograss.emm$emmeans[1, 2] - pol.nograss.emm$emmeans[2, 2]) / pol.nograss.emm$emmeans[2, 2] * 100
+```
+
+
+
+# Bee and rodent temporal variability models
+
+Read in bee data from EDI.
+```{r}
+# Package ID: knb-lter-sev.321.7 Cataloging System:https://pasta.edirepository.org.
+# Data set title: Bee species abundance and composition in three ecosystem types at the Sevilleta National Wildlife Refuge, New Mexico, USA.
+# Data set creator:  Karen Wright - Texas A&M University 
+# Data set creator:  Melanie Kazenel - University of New Mexico 
+# Data set creator:  Julieta Bettinelli - University of New Mexico 
+# Data set creator:  Terry Griswold - USDA-ARS 
+# Data set creator:  Jade McLellan - University of New Mexico 
+# Data set creator:  Kenneth Whitney - University of New Mexico 
+# Data set creator:  Jennifer Rudgers - University of New Mexico 
+#  Contact:    - Information Manager University of New Mexico  - sevim@unm.edu 
+# You should replace 'PUT-LOCAL-PATH-TO-DATA-FILE-HERE'  (below) with the appropriate path.   
+#   to your data file (e.g., c:\mydata\datafile.txt).                         
+infile1  <- file("./data/BEE_DATA_knb-lter-sev.321.7/SEVBeeData2002-2019_revised2023-07-19.csv", open="r")  
+
+bee.data <- read.csv(
+  infile1,
+  sep = ",",
+  quote = '"',
+  header = TRUE,
+  check.names = TRUE
+)
+
+close(infile1)
+```
+
+Read in rodent data from EDI
+```{r}
+# Package ID: knb-lter-sev.355.3 Cataloging System:https://pasta.edirepository.org.
+# Data set title: Small Mammal Demographic Data.
+# Data set creator:  Joshua Cortez - University of New Mexico 
+# Data set creator:  Seth Newsom - University of New Mexico 
+# Data set creator:  Philip Manlick - United States Forest Service 
+# Data set creator:  Anejelique Martinez - University of New Mexico 
+#  Contact:  Seth Newsome -  University of New Mexico  - newsome@unm.edu
+#  Contact:  Philip Manlick -  United States Forest Service  - Pmanlick@unm.edu
+#  Contact:  Joshua Cortez -  University of New Mexico  - Joshuacortez1561@unm.edu
+#  Contact:   SEVIM - Sevim   - sevim@unm.edu 
+# You should replace 'PUT-LOCAL-PATH-TO-DATA-FILE-HERE'  (below) with the appropriate path.   
+#   to your data file (e.g., c:\mydata\datafile.txt).                         
+infile1 <- file(
+  "./data/SMALL_MAMMAL_DATA_knb-lter-sev.8.297978/SEV008_wide.csv",
+  open = "r"
+)
+
+rodent.data <- read.csv(
+  infile1,
+  sep = ",",
+  quote = '"',
+  header = TRUE,
+  check.names = TRUE
+)
+
+close(infile1)
+
+summary(rodent.data)
+```
+
+## Prep bee data
+
+Bee data sites: B = Blue grama grassland, C = Creosote shrubland, G = Black grama grassland
+```{r}
+# Filter to fall season (months 7-10) 
+bee.data.filt <- bee.data %>% filter(month %in% c(7:10))
+
+# Melt into standard long format
+bee.melt <- melt(bee.data.filt, id.vars = c("month", "year", "start_date", "end_date", "complete_sampling_month", "complete_sampling_year", "ecosystem", "transect", "direction", "color"),
+                 value.name = "count", variable.name = "species_code", na.rm = TRUE, factorsAsStrings = TRUE)
+
+
+### Calculate Area under curve for abundance
+
+# Collapse to transect-level monthly abundance
+bee_transect_month <- bee.melt %>%
+  group_by(year, ecosystem, transect, species_code, month) %>%
+  summarise(
+    count = sum(count, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# AUC function, based on the trapezoidal rule to get area under curve (AUC)
+calculate_auc <- function(data) {
+  data <- data %>% arrange(month)
+
+  if (nrow(data) < 2) return(NA_real_)
+
+  sum(
+    diff(data$month) *
+      (head(data$count, -1) + tail(data$count, -1)) / 2,
+    na.rm = TRUE
+  )
+}
+
+# Apply AUC within each year × species × transect
+bee_auc <- bee_transect_month %>%
+  group_by(year, ecosystem, transect, species_code) %>%
+  summarise(
+    auc = calculate_auc(pick(month, count)),
+    .groups = "drop"
+  )
+
+
+### Remove rare species
+
+# Cast data so there is a column for each year, and a row for each species x ecosystem. This sums across transects in each year x ecosystem
+bee.wide <- dcast(bee_auc, species_code + ecosystem ~ year, sum, value.var = "auc", fill=0)
+
+# Number of years each bee species has non-zero abundance
+bee.yearsums <- bee.wide %>%
+  group_by(species_code) %>%
+  summarise(across(3:19, ~ sum(.x, na.rm = TRUE)))
+
+# Count the number of years each species has non-zero biomass across the SEV
+bee.yearsums$n.nonzero.years <- rowSums(bee.yearsums[, 2:18] != 0)
+
+# Filter to years with <3 years of non-zero abundance
+bee.less3 <- bee.yearsums %>%
+  filter(n.nonzero.years < 3) 
+
+# Filter out species with fewer than 3 non-zero years
+bee.wide %<>%
+  filter(!species_code %in% bee.less3$species_code)
+
+
+### Calculate bee_CV as CV of max abundance over time, for each ecosystem
+bee.wide %<>%
+  mutate(sum = apply(.[(3:20)], 1, sum, na.rm=T),
+           species_mu = apply(.[(3:20)], 1, mean, na.rm=T),
+           species_sd = apply(.[(3:20)], 1, sd, na.rm=T),
+           species_CV = species_sd/species_mu) %>%
+  filter(!is.na(species_CV)) 
+```
+
+
+
+## Prep rodent data 
+
+Use analagous pipeline to bees
+```{r}
+### Filtering steps
+
+# Exclude squirrels, chipmunks, and seed carnivores
+rodent.data %<>%
+  dplyr::select(-c("AMIN", "AMLE", "CHIN", "MUMU", "MUMU", "OTVA", "REME", "REMO", "REXX", "SIHI", "SPSP", "ONAR", "ONLE", "ONXX")) %>%
+  filter(habitat %in% c("Black grama grassland", "Creosote shrubland")) %>%
+  filter(season_fs == "fall")
+
+# Filter to habitats to compare to bees, and web_id asspatial unit
+rodent.data2 <- rodent.data %>%
+  filter(habitat %in% c("Black grama grassland", "Creosote shrubland")) %>%
+  dplyr::select(year, habitat, web_id, DIME:PGFV)  
+
+# Melt to long format
+rodent.melt <- melt(
+  rodent.data2,
+  id.vars = c("year", "habitat", "web_id"),
+  value.name = "animals.trap.night",
+  variable.name = "species_code",
+  na.rm = TRUE,
+  factorsAsStrings = TRUE
+)
+
+# Restrict to same years as bees
+rodent.melt <- rodent.melt %>%
+  filter(year %in% 2002:2019)
+
+
+### Calculate yearly mean abundance for each species in each web. This is the rodent analogue of yearly bee abundance per transect
+rodent.web.year <- rodent.melt %>%
+  group_by(species_code, year, habitat, web_id) %>%
+  summarise(
+    mean.animals = mean(animals.trap.night, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+### Remove rare species
+
+# Cast to wide format, summing across webs within each ecosystem-year
+rodent.wide <- dcast(
+  rodent.web.year,
+  species_code + habitat ~ year,
+  value.var = "mean.animals",
+  fun.aggregate = sum,
+  fill = 0
+)
+
+# Count number of nonzero years across ecosystems combined, by species
+rodent.yearsums <- rodent.wide %>%
+  group_by(species_code) %>%
+  summarise(across(`2002`:`2019`, ~ sum(.x, na.rm = TRUE)), .groups = "drop")
+
+rodent.yearsums$n.nonzero.years <- rowSums(rodent.yearsums[, as.character(2002:2019)] != 0)
+
+# Filter out species with fewer than 3 non-zero years
+rodent.less3 <- rodent.yearsums %>%
+  filter(n.nonzero.years < 3)
+
+rodent.wide <- rodent.wide %>%
+  filter(!species_code %in% rodent.less3$species_code)
+
+
+### Calculate mean, SD, and CV across years the same way as bees
+rodent.wide <- rodent.wide %>%
+  mutate(
+    sum = rowSums(across(`2002`:`2019`), na.rm = TRUE),
+    species_mu = rowMeans(across(`2002`:`2019`), na.rm = TRUE),
+    species_sd = apply(dplyr::select(., `2002`:`2019`), 1, sd, na.rm = TRUE),
+    species_CV = species_sd / species_mu
+  ) %>%
+  filter(!is.na(species_CV))
+
+
+### Rename columns and levels to match bee data
+
+# Rename habitat to ecosystem to match bee data
+rodent.wide <- rodent.wide %>%
+  rename(ecosystem = habitat)
+
+# Recode ecosystem names to match bee data
+rodent.wide <- rodent.wide %>%
+  mutate(
+    ecosystem = dplyr::recode(
+      ecosystem,
+      "Black grama grassland" = "G",
+      "Creosote shrubland" = "C"
+    ),
+    ecosystem = factor(ecosystem, levels = c("G", "C"))
+  )
+
+bee.wide <- bee.wide %>%
+  mutate(ecosystem = factor(ecosystem, levels = c("G", "C", "B")))
+```
+
+How many bee and rodent species do we have?
+```{r}
+# Bee
+n_distinct(bee.wide$species_code)
+
+# Rodent
+n_distinct(rodent.wide$species_code)
+```
+
+
+
+## Combine data
+
+```{r}
+# Add a column to rodent data saying it's a rodent. Same for bee data.
+rodent.wide$species_type <- "rodent"
+bee.wide$species_type <- "bee"
+
+# Merge 
+rodent.bee.data <- rbind(rodent.wide, bee.wide)
+
+# Filter to ecosystems present in both bee and rodent data
+rodent.bee.data %<>% filter(ecosystem != "B")
+
+# Replication
+rodent.bee.data %>%
+  group_by(ecosystem, species_type) %>%
+  summarise(n = n())
+```
+
+
+## Fit model
+
+```{r}
+# Table S8
+bm.noB.ln.mod.cov <- lmer(log(species_CV) ~ species_type + ecosystem + (1 | species_code), data = rodent.bee.data)
+Anova(bm.noB.ln.mod.cov)
+
+
+### Effect sizes (% increase in bee variability) 
+
+# marginal means for species_type, averaging over ecosystem
+emm_species <- emmeans(bm.noB.ln.mod.cov, ~ species_type)
+
+# Bees are 35% more variable than rodents
+contrast(emm_species, method = "pairwise", type = "response")
+
+### Plot
+
+# convert emmeans to a data frame
+emm_df <- as.data.frame(emm_species)
+
+# back-transform for plotting
+emm_df <- emm_df %>%
+  mutate(
+    species_CV = exp(emmean),
+    lower_CL = exp(lower.CL),
+    upper_CL = exp(upper.CL)
+  )
+
+# Figure 2
+bee.rodent.plot <- ggplot(emm_df, aes(x = species_type, y = species_CV)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = lower_CL, ymax = upper_CL), width = 0.1) +
+  scale_x_discrete(labels = c("Bees", "Rodents")) +
+  labs(
+    x = "Interaction type",
+    y = "Temporal variability (abundance CV)"
+  ) +
+  theme(
+    axis.text.x = element_text(color = "black"),
+    axis.text.y = element_text(color = "black"),
+    axis.title.x = element_text(color = "black"),
+    axis.title.y = element_text(color = "black")
+  )
+bee.rodent.plot
+```
+
+Subsampling / rarefaction to offset the 10x more bees than rodents
+```{r}
+set.seed(423)
+
+# Make sure rodent is the reference level
+rodent.bee.data <- rodent.bee.data %>%
+  mutate(species_type = relevel(factor(species_type), ref = "rodent"))
+
+# Main model using full dataset
+bm.noB.ln.mod.cov <- lmer(
+  log(species_CV) ~ species_type + ecosystem + (1 | species_code),
+  data = rodent.bee.data
+)
+
+# Number of rodent rows to match
+n_rodents <- sum(rodent.bee.data$species_type == "rodent")
+
+# Repeatedly subsample bees to match rodents, then refit model
+results <- replicate(1000, {
+  
+  bees_sub <- rodent.bee.data %>%
+    filter(species_type == "bee") %>%
+    slice_sample(n = n_rodents)
+  
+  dat_sub <- bind_rows(
+    bees_sub,
+    rodent.bee.data %>% filter(species_type == "rodent")
+  ) %>%
+    mutate(species_type = relevel(factor(species_type), ref = "rodent"))
+  
+  mod <- lmer(
+    log(species_CV) ~ species_type + ecosystem + (1 | species_code),
+    data = dat_sub
+  )
+  
+  fixef(mod)["species_typebee"]
+})
+
+# Convert log-scale effects to bee:rodent CV ratios
+ratio_results <- exp(results)
+
+# Mean % more variable
+(exp(mean(results)) - 1) * 100
+
+# 95% interval
+(exp(quantile(results, c(0.025, 0.975))) - 1) * 100
+
+
+
+### Plot distribution on original ratio scale
+
+# Convert log-scale effects to bee:rodent CV ratios
+coef_main_ratio <- exp(fixef(bm.noB.ln.mod.cov)["species_typebee"])
+
+# Convert log-scale effects to bee:mammal CV ratios
+ratio_results <- exp(results)
+
+df_plot <- data.frame(ratio = exp(results))
+
+# Figure S5
+subsample_plot <- ggplot(df_plot, aes(x = ratio)) +
+  geom_histogram(bins = 30, fill = "grey70", color = "black") +
+  geom_vline(xintercept = 1, linetype = "dashed") +
+  geom_vline(xintercept = coef_main_ratio, color = "red", linewidth = 1.2) +
+  labs(
+    x = expression("Bee : rodent " * italic(CV) * " ratio"),
+    y = "Frequency"
+  )
+
+subsample_plot
+```
+
+
+# Phylogenetic signal
+
+## Prep the data and the tree for phylo signal test
+
+Prep tree
+```{r}
+# Load tree with original branch lengths from Zanne tree
+tree.orig <- read.tree("./data/phylo_tree/orig.tre")
+
+# Plot tree
+plotTree(tree.orig)
+
+# Check if tree and data have the same species 
+intersect(unique(PIC.data$taxon.new), tree.orig$tip.label)
+setdiff(unique(PIC.data$taxon.new), tree.orig$tip.label)
+setdiff(tree.orig$tip.label, unique(PIC.data$taxon.new)) 
+
+# Remove "Grusonia_clavata" and "Munroa_squarrosa" from PIC.data because they are missing from the tree
+PIC.data %<>% filter(!taxon.new %in% c("Grusonia_clavata", "Munroa_squarrosa"))
+
+# Resolve multifurcations with branches of zero length
+tree.orig.mult <- multi2di(tree.orig)
+```
+
+Prep data 
+```{r}
+# Change binary variables to 0 and 1 (for pollination & dispersal: 0 = wind, 1 = animal)
+PIC.data %<>%
+  mutate(Pollination.num = ifelse(Pollination.new == "W", 0, 1),
+         Dispersal.num = ifelse(Dispersal.new == "W", 0, 1)) 
+
+# Each taxon will be one row for PICs, so take the mean CV for each species
+data.pics.means <- PIC.data %>%
+  group_by(taxon.new) %>%
+  summarise(cv.mean = mean(species_CV, na.rm=T),
+            Pollination.num = mean(Pollination.num, na.rm=T),
+            Dispersal.num = mean(Dispersal.num, na.rm=T)) %>%
+  data.frame()
+
+# Row names are taxa, in same format as tree
+row.names(data.pics.means) <- data.pics.means$taxon.new 
+```
+
+
+## Test for phylogenetic signal in temporal variability
+
+```{r}
+# Column in data.pics.means that matches tree$tip.label
+taxon_col <- "taxon.new"   
+
+# Named trait vector (names must match tree tip labels) 
+cv <- data.pics.means$cv.mean
+names(cv) <- data.pics.means[[taxon_col]]
+
+# keep only taxa shared by tree and data
+keep <- intersect(tree.orig.mult$tip.label, names(cv))
+cv2 <- cv[keep]
+tree2 <- drop.tip(tree.orig.mult, setdiff(tree.orig.mult$tip.label, keep))
+
+# remove NAs if present
+ok <- !is.na(cv2)
+cv2 <- cv2[ok]
+tree2 <- drop.tip(tree2, setdiff(tree2$tip.label, names(cv2)))
+
+# Calculate lambda
+cv_lambda <- phylosig(tree2, cv2, method = "lambda", test = TRUE)
+cv_lambda
+```
+
+
+# brms models
+
+```{r}
+# Construct a covariance matrix of species
+A.init.orig <- ape::vcv.phylo(tree.orig.mult)
+
+# Save and read in phylogenetic data
+phylo_list_init_orig <- list(A.init.orig = A.init.orig)
+dput(phylo_list_init_orig, "phylo_list_init_orig.txt")
+phylo_list_init_orig_r <-dget("phylo_list_init_orig.txt")
+
+# z-score Lat and Long
+PIC.data %<>%
+  mutate(Latitude_z = scale(X),
+         Longitude_z = scale(Y))
+```
+
+## Pollination
+
+Output suppressed for run time. Delete "eval=F" to run.
+```{r, eval=F}
+brms.mod.orig.pol <- bf(species_CV ~ (1|Pollination.new) + Latitude_z + Longitude_z + (1|site) + (1|gr(taxon.new, cov = A.init.orig)))
+brms.mod.orig.pol
+
+# Set priors for pollination model
+prior.pol <- c(
+            set_prior("student_t(3, 0, 1)", class = "sd", group = "Pollination.new"), 
+            set_prior("normal(0, 0.5)", class = "b", coef = "Latitude_z"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "Longitude_z"),
+            set_prior("student_t(3, 0, 1)", class = "sd", group = "site"),
+            set_prior("student_t(3, 0, 1.5)", class = "sd", group = "taxon.new")
+            )
+prior.pol
+
+# Run the model
+k_fit_brms.pol <- brm(brms.mod.orig.pol, 
+                  data = PIC.data, data2 = phylo_list_init_orig_r,
+                  family = "gaussian", prior = prior.pol,
+                  chains = 4, cores = 8, iter = 2000, backend = "cmdstanr",
+                  control = list(adapt_delta = 0.999, max_treedepth = 14)) # step_size = 0.01
+
+# Save model to disk and reload it in the next chunk so you only have to fit the brms model once.
+saveRDS(k_fit_brms.pol, file = "k_fit_brms_pol.rds")
+```
+
+Analyze model
+```{r}
+# Load model from disk
+k_fit_brms.pol <- readRDS("k_fit_brms_pol.rds")
+
+# Get summaries
+summary(k_fit_brms.pol, prob = 0.95)  
+summary(k_fit_brms.pol, prob = 0.5) 
+
+plot(k_fit_brms.pol)
+
+### Model checking plots. Posterior predict. 
+pp_check(k_fit_brms.pol, resp = "species_CV", ndraws = 100)
+
+# Full group level estimates for random effects
+ranef(k_fit_brms.pol, groups = "Pollination.new", probs = c(0.025, 0.975)) 
+ranef(k_fit_brms.pol, groups = "site", probs = 0.95)
+
+# Half-eye plot of main effects: Figure S1C
+halfeye_pol_mains <- k_fit_brms.pol %>%
+  gather_draws(b_Intercept, b_Latitude_z, b_Longitude_z) %>%
+  mutate(
+    .variable = dplyr::recode(
+      .variable,
+      b_Intercept = "Intercept",
+      b_Latitude_z = "Latitude",
+      b_Longitude_z = "Longitude"
+    ),
+    .variable = factor(
+      .variable,
+      levels = c("Longitude", "Latitude", "Intercept")
+    )
+  ) %>%
+  ggplot(aes(x = .value, y = .variable)) +
+  stat_halfeye() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Posterior estimate",
+    y = NULL
+  )
+
+halfeye_pol_mains
+
+
+# Pollination random intercepts: Figure S1A
+halfeye_pol_pollination <- k_fit_brms.pol %>%
+  gather_draws(
+    `r_Pollination.new[A,Intercept]`,
+    `r_Pollination.new[W,Intercept]`
+  ) %>%
+  mutate(
+    pollination = dplyr::recode(
+      .variable,
+      "r_Pollination.new[A,Intercept]" = "Animal",
+      "r_Pollination.new[W,Intercept]" = "Wind"
+    ),
+    pollination = factor(
+      pollination,
+      levels = c("Animal", "Wind")
+    )
+  ) %>%
+  ggplot(aes(x = .value, y = pollination)) +
+  stat_halfeye() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Pollination intercept deviation",
+    y = NULL
+  )
+
+halfeye_pol_pollination
+
+
+# Site random intercepts: Figure S1B
+halfeye_pol_sites <- k_fit_brms.pol %>%
+  gather_draws(
+    `r_site[core_black,Intercept]`,
+    `r_site[core_blue,Intercept]`,
+    `r_site[core_creosote,Intercept]`,
+    `r_site[core_PJ,Intercept]`,
+    `r_site[fertilizer,Intercept]`,
+    `r_site[mixed_grass,Intercept]`,
+    `r_site[mixed_shrub,Intercept]`
+  ) %>%
+  mutate(
+    site = dplyr::recode(
+      .variable,
+      "r_site[core_black,Intercept]" = "G",
+      "r_site[core_blue,Intercept]" = "B",
+      "r_site[core_creosote,Intercept]" = "C",
+      "r_site[core_PJ,Intercept]" = "P",
+      "r_site[fertilizer,Intercept]" = "F",
+      "r_site[mixed_grass,Intercept]" = "M",
+      "r_site[mixed_shrub,Intercept]" = "S"
+    ),
+    site = factor(
+      site,
+      levels = c(
+        "S",
+        "M",
+        "F",
+        "P",
+        "C",
+        "B",
+        "G"
+      )
+    )
+  ) %>%
+  ggplot(aes(x = .value, y = site)) +
+  stat_halfeye() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Site intercept deviation",
+    y = NULL
+  )
+
+halfeye_pol_sites
+
+
+# Posterior variance components: Figure S2
+varcomp_halfeye_pol <- k_fit_brms.pol %>%
+  gather_draws(
+    sd_Pollination.new__Intercept,
+    sd_site__Intercept,
+    sd_taxon.new__Intercept,
+    sigma
+  ) %>%
+  mutate(
+    component = dplyr::recode(
+      .variable,
+      sd_Pollination.new__Intercept = "Pollination SD",
+      sd_site__Intercept = "Site SD",
+      sd_taxon.new__Intercept = "Phylogenetic SD",
+      sigma = "Residual SD"
+    ),
+    component = factor(
+      component,
+      levels = c(
+        "Residual SD",
+        "Phylogenetic SD",
+        "Site SD",
+        "Pollination SD"
+      )
+    )
+  ) %>%
+  ggplot(aes(x = .value, y = component)) +
+  stat_halfeye() +
+  labs(
+    x = "Posterior SD",
+    y = NULL
+  ) +
+  xlim(c(0, 4))
+
+varcomp_halfeye_pol
+```
+
+
+
+## Dispersal
+
+Output suppressed for run time. Delete "eval=F" to run.
+```{r, eval=F}
+brms.mod.orig.disp <- bf(species_CV ~ (1|Dispersal.new) + Latitude_z + Longitude_z + (1|site) + (1|gr(taxon.new, cov = A.init.orig)))
+brms.mod.orig.disp
+
+
+# Set priors for pollination model
+prior.disp <- c(
+            set_prior("student_t(3, 0, 1)", class = "sd", group = "Dispersal.new"), 
+            set_prior("normal(0, 0.5)", class = "b", coef = "Latitude_z"),
+            set_prior("normal(0, 0.5)", class = "b", coef = "Longitude_z"),
+            set_prior("student_t(3, 0, 1)", class = "sd", group = "site"),
+            set_prior("student_t(3, 0, 1.5)", class = "sd", group = "taxon.new")
+            )
+prior.disp
+
+# Run the model
+k_fit_brms.disp <- brm(brms.mod.orig.disp, 
+                  data = PIC.data, data2 = phylo_list_init_orig_r,
+                  family = "gaussian", prior = prior.disp,
+                  chains = 4, cores = 8, iter = 2000, backend = "cmdstanr",
+                  control = list(adapt_delta = 0.995, max_treedepth = 14)) # step_size = 0.01
+
+# Save model to disk and reload it in the next chunk so you only have to fit the brms model once.
+saveRDS(k_fit_brms.disp, file = "k_fit_brms.disp.rds")
+```
+
+Analyze model
+```{r}
+# Load model from disk
+k_fit_brms.disp <- readRDS("k_fit_brms.disp.rds")
+
+# Summaries
+summary(k_fit_brms.disp, prob = 0.95) 
+summary(k_fit_brms.disp, prob = 0.5) 
+
+# Model diagnostics
+plot(k_fit_brms.disp)
+pp_check(k_fit_brms.disp, resp = "species_CV", ndraws = 100)
+
+# Full group level estimates for random effects
+ranef(k_fit_brms.disp, groups = "Dispersal.new", probs = c(0.025, 0.975))
+ranef(k_fit_brms.disp, groups = "site", probs = 0.95) 
+
+# Half-eye plot of main effects: Figure S3C
+halfeye_disp_mains <- k_fit_brms.disp %>%
+  gather_draws(b_Intercept, b_Latitude_z, b_Longitude_z) %>%
+  mutate(
+    .variable = dplyr::recode(
+      .variable,
+      b_Intercept = "Intercept",
+      b_Latitude_z = "Latitude",
+      b_Longitude_z = "Longitude"
+    ),
+    .variable = factor(
+      .variable,
+      levels = c("Longitude", "Latitude", "Intercept")
+    )
+  ) %>%
+  ggplot(aes(x = .value, y = .variable)) +
+  stat_halfeye() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Posterior estimate",
+    y = NULL
+  )
+
+halfeye_disp_mains
+
+
+# Pollination random intercepts: Figure S3A
+halfeye_disp_dispersal <- k_fit_brms.disp %>%
+  gather_draws(
+    `r_Dispersal.new[A,Intercept]`,
+    `r_Dispersal.new[W,Intercept]`
+  ) %>%
+  mutate(
+    pollination = dplyr::recode(
+      .variable,
+      "r_Dispersal.new[A,Intercept]" = "Animal",
+      "r_Dispersal.new[W,Intercept]" = "Wind"
+    ),
+    pollination = factor(
+      pollination,
+      levels = c("Animal", "Wind")
+    )
+  ) %>%
+  ggplot(aes(x = .value, y = pollination)) +
+  stat_halfeye() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Dispersal intercept deviation",
+    y = NULL
+  )
+
+halfeye_disp_dispersal
+
+
+# Site random intercepts: Figure S3B
+halfeye_disp_sites <- k_fit_brms.disp %>%
+  gather_draws(
+    `r_site[core_black,Intercept]`,
+    `r_site[core_blue,Intercept]`,
+    `r_site[core_creosote,Intercept]`,
+    `r_site[core_PJ,Intercept]`,
+    `r_site[fertilizer,Intercept]`,
+    `r_site[mixed_grass,Intercept]`,
+    `r_site[mixed_shrub,Intercept]`
+  ) %>%
+  mutate(
+    site = dplyr::recode(
+      .variable,
+      "r_site[core_black,Intercept]" = "G",
+      "r_site[core_blue,Intercept]" = "B",
+      "r_site[core_creosote,Intercept]" = "C",
+      "r_site[core_PJ,Intercept]" = "P",
+      "r_site[fertilizer,Intercept]" = "F",
+      "r_site[mixed_grass,Intercept]" = "M",
+      "r_site[mixed_shrub,Intercept]" = "S"
+    ),
+    site = factor(
+      site,
+      levels = c(
+        "S",
+        "M",
+        "F",
+        "P",
+        "C",
+        "B",
+        "G"
+      )
+    )
+  ) %>%
+  ggplot(aes(x = .value, y = site)) +
+  stat_halfeye() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Site intercept deviation",
+    y = NULL
+  )
+
+halfeye_disp_sites
+
+
+# Posterior variance components: Figure S4
+varcomp_halfeye_disp <- k_fit_brms.disp %>%
+  gather_draws(
+    sd_Dispersal.new__Intercept,
+    sd_site__Intercept,
+    sd_taxon.new__Intercept,
+    sigma
+  ) %>%
+  mutate(
+    component = dplyr::recode(
+      .variable,
+      sd_Dispersal.new__Intercept = "Dispersal SD",
+      sd_site__Intercept = "Site SD",
+      sd_taxon.new__Intercept = "Phylogenetic SD",
+      sigma = "Residual SD"
+    ),
+    component = factor(
+      component,
+      levels = c(
+        "Residual SD",
+        "Phylogenetic SD",
+        "Site SD",
+        "Dispersal SD"
+      )
+    )
+  ) %>%
+  ggplot(aes(x = .value, y = component)) +
+  stat_halfeye() +
+  labs(
+    x = "Posterior SD",
+    y = NULL
+  ) +
+  xlim(c(0, 4))
+
+varcomp_halfeye_disp
+```
+
+
+
+# Make phylogenetic trees with temporal variability and species interaction traits mapped on
+
+Make a dataframe for plotting the tree
+```{r}
+# Get mean CV for each species. 
+new.pic.data.summary <- PIC.data %>%
+  group_by(kartez) %>%
+  summarise(n = n(),
+            mean.cv = mean(species_CV, na.rm=T))
+
+# Join with species interaction data
+phylo.data <- left_join(new.pic.data.summary, PIC.data %>% dplyr::select(kartez, Pollination.new, Dispersal.new, taxon.new), by = "kartez") %>% 
+  group_by(kartez) %>% 
+  filter(row_number()==1) %>% data.frame()
+
+# ASFE2 is "Astragalus_feensis"
+phylo.data$taxon.new[phylo.data$kartez == "ASFE2"] <- "Astragalus_feensis"
+
+# Change "taxon.new" to "label" for merge with tree data below
+colnames(phylo.data)[6] <- "label"
+
+# Row names as genus species
+rownames(phylo.data) <- phylo.data$label
+
+# Remove columns I don't need
+phylo.data$kartez <- NULL
+phylo.data$n <- NULL
+```
+
+
+```{r, warning=F}
+library(ggnewscale)
+
+# Create a circular ("fan") phylogeny
+p <- ggtree(tree.orig, layout="fan") 
+
+# Extract only the genus from each species name for tip labels
+tree.orig$tip.label.genus <- sub("_.*", "", tree.orig$tip.label)
+
+# ggtree stores both tip and internal nodes in p$data, so pad the genus vector with NAs so that its length matches the number of rows in p$data
+toAppend <- nrow(p$data) - length(tree.orig$tip.label)
+
+tree.orig$tip.label.genus <- append(tree.orig$tip.label.genus, rep(NA, toAppend))
+
+# Add genus names to the ggtree data object
+p$data$tip.label.genus <- tree.orig$tip.label.genus
+
+
+# Extract x- and y-coordinates of the tips (species) only. These coordinates will be used to position additional points
+tip_positions <- p$data %>%
+  filter(isTip) %>%
+  dplyr::select(label, x, y)
+
+# Merge tip coordinates with species metadata (CV, pollination, dispersal)
+tip_data_merged <- tip_positions %>%
+  left_join(phylo.data, by = "label")
+
+# Add genus labels to the tree tips
+p <- p + geom_tiplab(aes(label = tip.label.genus), size = 2) + # tip labels on tips
+  xlim(0, max(tip_positions$x) + 220)   # extend plot space for dots
+
+# Add a ring of points representing mean species CV
+p1 <- p +
+  geom_point(data = tip_data_merged,
+             aes(x = x + 220, y = y, color = mean.cv),
+             size = 2) +
+  scale_color_gradient(low  = "grey90",
+                       high = "grey10",
+                       name = "Biomass CV") +
+  ggnewscale::new_scale_color()
+
+# Add a ring of points representing pollination strategy
+p.pol <- p1 +
+  geom_point(data = tip_data_merged,
+             aes(x = x + 190, y = y, color = Pollination.new),
+             size = 2) +
+  scale_color_manual(values = c("W" = "blue", "A" = "red"),
+                     name = "Pollination strategy",
+                     labels = c("Animal", "Wind")) +
+  theme_tree2()
+
+# Pollination: Figure 1C
+p.pol
+
+
+# Add a ring of points representing dispersal strategy
+p.disp <- p1 +
+  geom_point(data = tip_data_merged,
+             aes(x = x + 190, y = y, color = Dispersal.new),
+             size = 2) +
+  scale_color_manual(values = c("W" = "darkgreen", "A" = "orange"),
+                     name = "Dispersal strategy",
+                     labels = c("Animal", "Wind"),
+                     na.value = "transparent") +
+  theme_tree2()
+
+# Dispersal: Figure 1D
+p.disp
+```
+
+
+
+
+
+# CCM 
+
+Use Elijah’s pairs of plant-bee species, and do CCM to see if bee abundance predicts plant abundance.
+
+Plants:
+* Cactaceae (visited by 29 bee species)
+* Larrea tridentata (visted by 54 bee species)
+* Sphaeralcae (visted by 46 bee species)
+
+```{r}
+# Load Table S1 from Clark et al Ecosphere submission
+bee_diets <- read.csv("./data/bee_diet_breadth_table.csv")
+
+# Create a table for each plant species, that includes the bees that feed on it
+cactaceae_bees <- bee_diets %>%
+  filter(str_detect(Floral.partner.s., "Cactaceae"))
+
+larrea_bees <- bee_diets %>%
+  filter(str_detect(Floral.partner.s., "Larrea tridentata"))
+
+sphaeralcea_bees <- bee_diets %>%
+  filter(str_detect(Floral.partner.s., "Sphaeralcea"))
+
+bee_plant_links <- bind_rows(
+  cactaceae_bees %>%
+    mutate(plant_group = "Cactaceae"),
+
+  larrea_bees %>%
+    mutate(plant_group = "Larrea tridentata"),
+
+  sphaeralcea_bees %>%
+    mutate(plant_group = "Sphaeralcea")
+)
+```
+
+Prep plant data
+```{r}
+# Make a plant_group column for my 3 plant groups
+mass %<>%
+  mutate(
+    date = as.Date(date),
+    plant_group = case_when(
+      family == "Cactaceae" ~ "Cactaceae",
+      genus == "Larrea" & sp.epithet == "tridentata" ~ "Larrea tridentata",
+      genus == "Sphaeralcea" ~ "Sphaeralcea",
+      TRUE ~ NA_character_
+    )
+  )
+
+# Restrict to the 3 sites in bee data
+mass_bee_sites <- mass %>%
+  filter(site %in% c(
+    "core_blue",
+    "core_creosote",
+    "core_black"
+  )) %>%
+  mutate(
+    ecosystem = case_when(
+      site == "core_blue"      ~ "B",
+      site == "core_creosote"  ~ "C",
+      site == "core_black"     ~ "G"
+    )
+  )
+
+# Create the census windows (start, end, mid)
+census_dates <- mass_bee_sites %>%
+  group_by(year, season, ecosystem) %>%
+  summarise(
+    census_start = min(date, na.rm = TRUE),
+    census_end   = max(date, na.rm = TRUE),
+    census_mid   = census_start + (census_end - census_start) / 2,
+    .groups = "drop"
+  )
+
+# Add census windows to mass_bee_sites
+mass_bee_sites %<>%
+  left_join(
+    census_dates,
+    by = c("year", "season", "ecosystem")
+  )
+
+### Calculate abundance of the three plant groups. Fill with zeros when unobserved in a quad.
+
+# Which quads were actually sampled
+sampled_quads <- mass_bee_sites %>%
+  distinct(
+    year,
+    season,
+    ecosystem,
+    site,
+    quad_ID
+  )
+
+# Create all 3 plant groups for every sampled quadrat
+plant_groups <- c(
+  "Cactaceae",
+  "Larrea tridentata",
+  "Sphaeralcea"
+)
+
+sampled_quads <- sampled_quads %>%
+  crossing(
+    plant_group = plant_groups
+  )
+
+# Calculate observed biomass
+plant_quad <- mass_bee_sites %>%
+  filter(!is.na(plant_group)) %>%
+  group_by(
+    year,
+    season,
+    ecosystem,
+    site,
+    quad_ID,
+    plant_group
+  ) %>%
+  summarise(
+    plant_biomass = sum(biomass.BM, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Join biomasses to the complete set of sampled quads
+plant_quad <- sampled_quads %>%
+  left_join(
+    plant_quad,
+    by = c(
+      "year",
+      "season",
+      "ecosystem",
+      "site",
+      "quad_ID",
+      "plant_group"
+    )
+  ) %>%
+  mutate(
+    plant_biomass = replace_na(plant_biomass, 0)
+  )
+
+
+### Get seasonal biomass for each plant group (mean biomass across all sampled quadrats)
+plant_season <- plant_quad %>%
+  group_by(
+    year,
+    season,
+    ecosystem,
+    plant_group
+  ) %>%
+  summarise(
+    mean_plant_biomass = mean(plant_biomass),
+    n_quads = n(),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    census_dates,
+    by = c("year", "season", "ecosystem")
+  )
+```
+
+Prep bee data
+```{r}
+# Turn bee data into long format. We're keeping all months of data for now. Get start, end, and mid dates of sampling, like with plant data
+bee_long <- bee.data %>%
+  pivot_longer(
+    cols = -c(
+      month,
+      year,
+      start_date,
+      end_date,
+      complete_sampling_month,
+      complete_sampling_year,
+      ecosystem,
+      transect,
+      direction,
+      color
+    ),
+    names_to = "species_code",
+    values_to = "count",
+    values_drop_na = TRUE
+  ) %>%
+  mutate(
+    start_date = as.Date(start_date),
+    end_date = as.Date(end_date),
+    sample_mid = start_date + (end_date - start_date) / 2
+  )
+```
+
+Checks
+```{r}
+# Temporal coverage
+plant_season %>%
+  group_by(ecosystem, season) %>%
+  summarise(
+    first_year = min(year),
+    last_year = max(year),
+    n_years = n_distinct(year),
+    .groups = "drop"
+  )
+
+# Restrict plant data to 2002-2019, to match bee data
+plant_season %<>%
+  filter(year >= 2002, year <= 2019)
+
+# Spatial coverage - no Larrea tridentata in Blue
+plant_season %>%
+  group_by(ecosystem, plant_group) %>%
+  summarise(
+    n_year_seasons = n(),
+    n_nonzero = sum(mean_plant_biomass > 0),
+    proportion_nonzero = mean(mean_plant_biomass > 0),
+    .groups = "drop"
+  )
+
+
+```
+
+Quick and dirty analysis without any phenological information: annual abundance of bees known to visit this plant → future plant biomass
+```{r}
+# 1. Calculate annual abundance for each bee species
+bee_annual <- bee_long %>%
+  filter(
+    !year %in% c(2016, 2017),
+    species_code %in% bee_plant_links$Code
+  ) %>%
+  group_by(
+    year,
+    ecosystem,
+    species_code
+  ) %>%
+  summarise(
+    annual_abundance = sum(count, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 2. Turn each bee species into a boom/bust index: Standardize each bee species within ecosystem
+bee_annual <- bee_annual %>%
+  group_by(ecosystem, species_code) %>%
+  mutate(
+    bee_z = as.numeric(scale(annual_abundance))
+  ) %>%
+  ungroup()
+
+# 3. Create one bee index for each plant group
+bee_plant_annual <- bee_annual %>%
+  inner_join(
+    bee_plant_links,
+    by = c("species_code" = "Code")
+  ) %>%
+  group_by(
+    year,
+    ecosystem,
+    plant_group
+  ) %>%
+  summarise(
+    bee_index = mean(bee_z, na.rm = TRUE),
+    n_bee_species = n_distinct(species_code),
+    .groups = "drop"
+  )
+
+# 4. Use spring plant biomass (to start)
+plant_spring <- plant_season %>%
+  filter(
+    season == "spring",
+    year >= 2002,
+    year <= 2023
+  ) %>%
+  select(
+    year,
+    ecosystem,
+    plant_group,
+    mean_plant_biomass
+  )
+
+plant_future <- plant_spring %>%
+  transmute(
+    future_year = year,
+    ecosystem,
+    plant_group,
+    plant_biomass_future = mean_plant_biomass
+  )
+
+# 5. Create 1-, 2-, and 3-year datasets
+lagged_data <- bee_plant_annual %>%
+  crossing(lag = 1:3) %>%
+  mutate(
+    future_year = year + lag
+  ) %>%
+  left_join(
+    plant_future,
+    by = c(
+      "future_year",
+      "ecosystem",
+      "plant_group"
+    )
+  )
+
+# And add plant biomass in year t
+lagged_data <- lagged_data %>%
+  left_join(
+    plant_spring %>%
+      rename(
+        plant_biomass_t = mean_plant_biomass
+      ),
+    by = c(
+      "year",
+      "ecosystem",
+      "plant_group"
+    )
+  )
+
+# 6. Remove the Larrea × blue-grama combination (Because Larrea has zero biomass throughout B)
+lagged_data <- lagged_data %>%
+  filter(
+    !(ecosystem == "B" &
+        plant_group == "Larrea tridentata")
+  ) %>%
+  filter(
+    !is.na(plant_biomass_future),
+    !is.na(plant_biomass_t)
+  )
+
+# 7. First look: just plot it
+ggplot(
+  lagged_data,
+  aes(
+    x = bee_index,
+    y = plant_biomass_future
+  )
+) +
+  geom_point() +
+  geom_smooth(
+    method = "lm",
+    se = TRUE
+  ) +
+  facet_grid(
+    plant_group ~ lag,
+    scales = "free_y"
+  ) +
+  labs(
+    x = "Bee boom/bust index",
+    y = "Future spring plant biomass"
+  ) 
+
+ggplot(
+  lagged_data,
+  aes(
+    x = bee_index,
+    y = log1p(plant_biomass_future)
+  )
+) +
+  geom_point() +
+  geom_smooth(
+    method = "lm",
+    se = TRUE
+  ) +
+  facet_grid(
+    plant_group + ecosystem ~ lag,
+    scales = "free_y"
+  ) +
+  labs(
+    x = "Bee boom/bust index",
+    y = "log(1 + future spring plant biomass)"
+  ) 
+
+
+# Quick model
+models <- lagged_data %>%
+  mutate(
+    log_biomass_future = log1p(plant_biomass_future),
+    log_biomass_t = log1p(plant_biomass_t)
+  ) %>%
+  group_by(plant_group, ecosystem, lag) %>%
+  group_modify(
+    ~ broom::tidy(
+      lm(
+        log_biomass_future ~ log_biomass_t + bee_index,
+        data = .x
+      )
+    )
+  ) %>%
+  ungroup()
+
+models %>%
+  filter(term == "bee_index") %>%
+  select(
+    plant_group,
+    ecosystem,
+    lag,
+    estimate,
+    std.error,
+    statistic,
+    p.value
+  ) %>%
+  print(n = Inf)
+
+# Test whether bee booms predict subsequent plant biomass within ecosystems, while estimating one common bee effect from all ecosystems
+models_pooled <- lagged_data %>%
+  mutate(
+    log_biomass_future = log1p(plant_biomass_future),
+    log_biomass_t = log1p(plant_biomass_t)
+  ) %>%
+  group_by(plant_group, lag) %>%
+  group_modify(
+    ~ broom::tidy(
+      lm(
+        log_biomass_future ~
+          log_biomass_t +
+          bee_index +
+          factor(ecosystem),
+        data = .x
+      )
+    )
+  ) %>%
+  ungroup()
+
+models_pooled %>%
+  filter(term == "bee_index") %>%
+  select(
+    plant_group,
+    lag,
+    estimate,
+    std.error,
+    statistic,
+    p.value
+  ) %>%
+  print(n = Inf)
+
+
+# Verify that this isn't just one or two bizarre years driving the Sphaeralcea result
+sph1 <- lagged_data %>%
+  filter(
+    plant_group == "Sphaeralcea",
+    lag == 1
+  ) %>%
+  mutate(
+    log_biomass_future = log1p(plant_biomass_future),
+    log_biomass_t = log1p(plant_biomass_t)
+  )
+
+m_sph1 <- lm(
+  log_biomass_future ~ log_biomass_t + factor(ecosystem),
+  data = sph1
+)
+
+sph1$plant_residual <- residuals(m_sph1)
+
+ggplot(
+  sph1,
+  aes(
+    x = bee_index,
+    y = plant_residual,
+    label = year
+  )
+) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_point(
+    aes(shape = ecosystem),
+    size = 3
+  ) +
+  geom_text(
+    nudge_y = 0.03,
+    size = 3
+  ) +
+  geom_smooth(
+    method = "lm",
+    se = TRUE
+  ) +
+  labs(
+    x = "Sphaeralcea-associated bee boom/bust index",
+    y = "Future Sphaeralcea biomass\n(after accounting for current biomass and ecosystem)"
+  )
+```
+
+So we have a promising result for Sphaeralcea.  
+
+Now let's try adding climate to models, to see if a wet year causes high bee abundance in year t and high plant abundance in year t+1
+```{r}
+### Fix bee-plant links first
+
+# Make a clean link table (no diet breadth)
+bee_plant_links_clean <- bee_plant_links %>%
+  distinct(Code, plant_group)
+
+# Rebuild annual bee index
+bee_plant_annual <- bee_annual %>%
+  inner_join(
+    bee_plant_links_clean,
+    by = c("species_code" = "Code"),
+    relationship = "many-to-many"
+  ) %>%
+  group_by(
+    year,
+    ecosystem,
+    plant_group
+  ) %>%
+  summarise(
+    bee_index = mean(bee_z, na.rm = TRUE),
+    n_bee_species = n_distinct(species_code),
+    .groups = "drop"
+  )
+
+
+### Rebuild lagged plant-bee dataset
+
+lagged_data <- bee_plant_annual %>%
+  crossing(lag = 1:3) %>%
+  mutate(
+    future_year = year + lag
+  ) %>%
+  left_join(
+    plant_future,
+    by = c(
+      "future_year",
+      "ecosystem",
+      "plant_group"
+    )
+  ) %>%
+  left_join(
+    plant_spring %>%
+      rename(
+        plant_biomass_t = mean_plant_biomass
+      ),
+    by = c(
+      "year",
+      "ecosystem",
+      "plant_group"
+    )
+  ) %>%
+  filter(
+    !(ecosystem == "B" &
+        plant_group == "Larrea tridentata"),
+    !is.na(plant_biomass_future),
+    !is.na(plant_biomass_t)
+  )
+
+
+### Add precipitation
+
+precip <- mass_bee_sites %>%
+  distinct(
+    year,
+    season,
+    ecosystem,
+    season.precip
+  )
+
+# Check that there is one precipitation value per group
+precip %>%
+  count(year, season, ecosystem) %>%
+  count(n)
+
+# Put spring and fall precipitation in separate columns
+precip_wide <- precip %>%
+  pivot_wider(
+    names_from = season,
+    values_from = season.precip,
+    names_prefix = "precip_"
+  ) %>%
+  mutate(
+    precip_t = precip_spring + precip_fall
+  )
+
+# Add precipitation during bee year t
+lagged_data_climate <- lagged_data %>%
+  left_join(
+    precip_wide %>%
+      select(
+        year,
+        ecosystem,
+        precip_t
+      ),
+    by = c("year", "ecosystem")
+  )
+
+# Add spring precipitation in future response year
+lagged_data_climate <- lagged_data_climate %>%
+  left_join(
+    precip_wide %>%
+      select(
+        future_year = year,
+        ecosystem,
+        precip_future_spring = precip_spring
+      ),
+    by = c(
+      "future_year",
+      "ecosystem"
+    )
+  )
+
+
+### Climate-adjusted lagged models
+
+models_climate <- lagged_data_climate %>%
+  mutate(
+    log_biomass_future = log1p(plant_biomass_future),
+    log_biomass_t = log1p(plant_biomass_t),
+
+    precip_t_z =
+      as.numeric(scale(precip_t)),
+
+    precip_future_spring_z =
+      as.numeric(scale(precip_future_spring))
+  ) %>%
+  group_by(
+    plant_group,
+    lag
+  ) %>%
+  group_modify(
+    ~ broom::tidy(
+      lm(
+        log_biomass_future ~
+          log_biomass_t +
+          bee_index +
+          precip_t_z +
+          precip_future_spring_z +
+          factor(ecosystem),
+        data = .x
+      )
+    )
+  ) %>%
+  ungroup()
+
+
+### Look at bee effects
+
+models_climate %>%
+  filter(term == "bee_index") %>%
+  select(
+    plant_group,
+    lag,
+    estimate,
+    std.error,
+    statistic,
+    p.value
+  ) %>%
+  print(n = Inf)
+
+```
+
+So the pattern is now: years with unusually high abundance of Sphaeralcea-associated bees are associated with higher Sphaeralcea biomass one year later, even after controlling for current Sphaeralcea biomass, precipitation in year t, spring precipitation in the response year, and ecosystem.
+
+The other groups do not show that pattern. Cactaceae actually has a negative lag-2 association (β = -0.672, P = 0.0395), which is opposite the original hypothesis, and Larrea is inconsistent.
+
+Let's test whether the Sphaeralcea lag-1 effect is robust to individual bee species. The simplest useful test is leave-one-bee-species-out: rebuild the Sphaeralcea bee index 45 times, each time excluding one species, and refit the same precipitation-controlled model.
+```{r}
+### Leave-one-bee-species-out analysis for Sphaeralcea
+
+sph_bees <- bee_plant_links_clean %>%
+  filter(plant_group == "Sphaeralcea") %>%
+  pull(Code) %>%
+  unique()
+
+length(sph_bees)
+# should be 45
+
+
+# Function that removes one bee species, rebuilds the index,
+# and fits the Sphaeralcea lag-1 model
+leave_one_bee_out <- function(bee_to_remove) {
+
+  # Recalculate Sphaeralcea bee index without this species
+  bee_index_loo <- bee_annual %>%
+    filter(
+      species_code %in% sph_bees,
+      species_code != bee_to_remove
+    ) %>%
+    group_by(year, ecosystem) %>%
+    summarise(
+      bee_index = mean(bee_z, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  # Replace original Sphaeralcea bee index
+  dat <- lagged_data_climate %>%
+    filter(
+      plant_group == "Sphaeralcea",
+      lag == 1
+    ) %>%
+    select(-bee_index) %>%
+    left_join(
+      bee_index_loo,
+      by = c("year", "ecosystem")
+    ) %>%
+    mutate(
+      log_biomass_future = log1p(plant_biomass_future),
+      log_biomass_t = log1p(plant_biomass_t),
+      precip_t_z = as.numeric(scale(precip_t)),
+      precip_future_spring_z =
+        as.numeric(scale(precip_future_spring))
+    )
+
+  # Fit same model
+  fit <- lm(
+    log_biomass_future ~
+      log_biomass_t +
+      bee_index +
+      precip_t_z +
+      precip_future_spring_z +
+      factor(ecosystem),
+    data = dat
+  )
+
+  # Return bee effect
+  broom::tidy(fit) %>%
+    filter(term == "bee_index") %>%
+    mutate(
+      bee_removed = bee_to_remove
+    )
+}
+
+
+### Run it for all 45 bees
+
+sph_loo <- purrr::map_dfr(
+  sph_bees,
+  leave_one_bee_out
+)
+
+
+### Examine results
+
+sph_loo %>%
+  arrange(estimate) %>%
+  select(
+    bee_removed,
+    estimate,
+    std.error,
+    statistic,
+    p.value
+  ) %>%
+  print(n = Inf)
+
+# The Sphaeralcea lag-1 result is not being driven by any single bee species. Good!
+sph_loo %>%
+  summarise(
+    min_beta = min(estimate),
+    median_beta = median(estimate),
+    max_beta = max(estimate),
+    min_p = min(p.value),
+    median_p = median(p.value),
+    max_p = max(p.value),
+    n_positive = sum(estimate > 0),
+    n_p_lt_05 = sum(p.value < 0.05)
+  )
+```
+
+Look at annual vs. perennial Sphaeralcea species
+```{r}
+sphaeralcea_species <- mass_bee_sites %>%
+  filter(
+    genus == "Sphaeralcea",
+    season == "spring",
+    year >= 2002,
+    year <= 2023
+  ) %>%
+  mutate(
+    species = paste(genus, sp.epithet)
+  ) %>%
+  group_by(species) %>%
+  summarise(
+    total_biomass = sum(biomass.BM, na.rm = TRUE),
+    n_records = n(),
+    n_years = n_distinct(year),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    percent_biomass =
+      100 * total_biomass / sum(total_biomass)
+  ) %>%
+  arrange(desc(total_biomass))
+
+
+# All species are perennial
+sphaeralcea_species %>%
+  print(n = Inf)
+
+# We want to ask whether the lag-1 relationship occurs in S. hastulata, S. polychroma, or both
+### Species-level Sphaeralcea spring biomass
+
+sph_species <- c(
+  "Sphaeralcea hastulata",
+  "Sphaeralcea polychroma"
+)
+
+# All sampled spring quadrats
+sph_sampled_quads <- mass_bee_sites %>%
+  filter(
+    season == "spring",
+    year >= 2002,
+    year <= 2023
+  ) %>%
+  distinct(
+    year,
+    ecosystem,
+    site,
+    quad_ID
+  ) %>%
+  crossing(species = sph_species)
+
+
+# Biomass of each species in each quadrat
+sph_quad <- mass_bee_sites %>%
+  filter(
+    season == "spring",
+    genus == "Sphaeralcea",
+    year >= 2002,
+    year <= 2023
+  ) %>%
+  mutate(
+    species = paste(genus, sp.epithet)
+  ) %>%
+  filter(species %in% sph_species) %>%
+  group_by(
+    year,
+    ecosystem,
+    site,
+    quad_ID,
+    species
+  ) %>%
+  summarise(
+    plant_biomass = sum(biomass.BM, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+# Fill sampled quadrats where species was absent with zero
+sph_quad <- sph_sampled_quads %>%
+  left_join(
+    sph_quad,
+    by = c(
+      "year",
+      "ecosystem",
+      "site",
+      "quad_ID",
+      "species"
+    )
+  ) %>%
+  mutate(
+    plant_biomass = replace_na(plant_biomass, 0)
+  )
+
+
+# Mean biomass across sampled quadrats
+sph_species_annual <- sph_quad %>%
+  group_by(
+    year,
+    ecosystem,
+    species
+  ) %>%
+  summarise(
+    mean_plant_biomass = mean(plant_biomass),
+    n_quads = n(),
+    .groups = "drop"
+  )
+
+### Sphaeralcea bee index
+
+sph_bee_index <- bee_plant_annual %>%
+  filter(plant_group == "Sphaeralcea") %>%
+  select(
+    year,
+    ecosystem,
+    bee_index
+  )
+
+
+### Current and next-year species biomass
+
+sph_species_lag1 <- sph_species_annual %>%
+  rename(
+    plant_biomass_t = mean_plant_biomass
+  ) %>%
+  mutate(
+    future_year = year + 1
+  ) %>%
+  left_join(
+    sph_species_annual %>%
+      transmute(
+        future_year = year,
+        ecosystem,
+        species,
+        plant_biomass_future = mean_plant_biomass
+      ),
+    by = c(
+      "future_year",
+      "ecosystem",
+      "species"
+    )
+  ) %>%
+  inner_join(
+    sph_bee_index,
+    by = c(
+      "year",
+      "ecosystem"
+    )
+  ) %>%
+  filter(
+    !is.na(plant_biomass_future)
+  )
+
+### Add precipitation
+
+sph_species_lag1 <- sph_species_lag1 %>%
+  left_join(
+    precip_wide %>%
+      select(
+        year,
+        ecosystem,
+        precip_t
+      ),
+    by = c("year", "ecosystem")
+  ) %>%
+  left_join(
+    precip_wide %>%
+      select(
+        future_year = year,
+        ecosystem,
+        precip_future_spring = precip_spring
+      ),
+    by = c(
+      "future_year",
+      "ecosystem"
+    )
+  )
+
+
+### Fit each species separately
+
+sph_species_models <- sph_species_lag1 %>%
+  mutate(
+    log_biomass_future = log1p(plant_biomass_future),
+    log_biomass_t = log1p(plant_biomass_t),
+    precip_t_z = as.numeric(scale(precip_t)),
+    precip_future_spring_z =
+      as.numeric(scale(precip_future_spring))
+  ) %>%
+  group_by(species) %>%
+  group_modify(
+    ~ broom::tidy(
+      lm(
+        log_biomass_future ~
+          log_biomass_t +
+          bee_index +
+          precip_t_z +
+          precip_future_spring_z +
+          factor(ecosystem),
+        data = .x
+      )
+    )
+  ) %>%
+  ungroup()
+
+
+### Bee effect for each species
+
+# The genus-level result isn't being driven by just one species. Both major species move in the predicted direction, with S. polychroma showing somewhat stronger evidence.
+sph_species_models %>%
+  filter(term == "bee_index") %>%
+  select(
+    species,
+    estimate,
+    std.error,
+    statistic,
+    p.value
+  )
+
+
+# Let's test whether bee abundance in year t predicts Sphaeralcea occupancy in spring of t+1
+
+### Sphaeralcea occupancy by ecosystem and year
+
+sph_occupancy <- plant_quad %>%
+  filter(
+    plant_group == "Sphaeralcea",
+    season == "spring",
+    year >= 2002,
+    year <= 2023
+  ) %>%
+  group_by(
+    year,
+    ecosystem
+  ) %>%
+  summarise(
+    n_quads = n(),
+    n_occupied = sum(plant_biomass > 0),
+    occupancy = n_occupied / n_quads,
+    .groups = "drop"
+  )
+
+### Genus-level Sphaeralcea occupancy
+
+sph_occupancy <- sph_quad %>%
+  group_by(
+    year,
+    ecosystem,
+    site,
+    quad_ID
+  ) %>%
+  summarise(
+    occupied = any(plant_biomass > 0),
+    .groups = "drop"
+  ) %>%
+  group_by(
+    year,
+    ecosystem
+  ) %>%
+  summarise(
+    n_quads = n(),
+    n_occupied = sum(occupied),
+    occupancy = mean(occupied),
+    .groups = "drop"
+  )
+
+### Current and future occupancy
+
+# construct the one-year lag
+sph_occupancy_lag1 <- sph_occupancy %>%
+  rename(
+    occupancy_t = occupancy
+  ) %>%
+  mutate(
+    future_year = year + 1
+  ) %>%
+  left_join(
+    sph_occupancy %>%
+      transmute(
+        future_year = year,
+        ecosystem,
+        occupancy_future = occupancy
+      ),
+    by = c(
+      "future_year",
+      "ecosystem"
+    )
+  ) %>%
+  inner_join(
+    sph_bee_index,
+    by = c(
+      "year",
+      "ecosystem"
+    )
+  ) %>%
+  filter(
+    !is.na(occupancy_future)
+  )
+
+# Add precip covariates
+sph_occupancy_lag1 <- sph_occupancy_lag1 %>%
+  left_join(
+    precip_wide %>%
+      select(
+        year,
+        ecosystem,
+        precip_t
+      ),
+    by = c("year", "ecosystem")
+  ) %>%
+  left_join(
+    precip_wide %>%
+      select(
+        future_year = year,
+        ecosystem,
+        precip_future_spring = precip_spring
+      ),
+    by = c(
+      "future_year",
+      "ecosystem"
+    )
+  ) %>%
+  mutate(
+    precip_t_z = as.numeric(scale(precip_t)),
+    precip_future_spring_z =
+      as.numeric(scale(precip_future_spring))
+  )
+
+# Model
+m_sph_occupancy <- lm(
+  occupancy_future ~
+    occupancy_t +
+    bee_index +
+    precip_t_z +
+    precip_future_spring_z +
+    factor(ecosystem),
+  data = sph_occupancy_lag1
+)
+
+broom::tidy(m_sph_occupancy) %>%
+  filter(term == "bee_index")
+```
+
+
+
+
+
+# New analysis testing if Sphaeralcea-associated bee abundance predicts Sphaeralcea biomass
+
+Note, the uses some steps from the previous analysis, so don't delete everything in "CCM"
+
+Step 1: Find the best bee abundance window
+Step 2: Fit the biomass model
+
+Prep data
+```{r}
+# First, let's check sampling coverage. We're missing coverage in 2016 and 2017, so let's exclude those intially.
+bee.data %>%
+  group_by(year, ecosystem) %>%
+  summarise(
+    n_months = n_distinct(month),
+    n_complete_months = n_distinct(
+      month[complete_sampling_month == 1]
+    ),
+    first_date = min(as.Date(start_date)),
+    last_date = max(as.Date(end_date)),
+    .groups = "drop"
+  ) %>%
+  print(n = Inf)
+
+# Identify bees recorded visiting Sphaeralcea
+sph_bee_codes <- bee_plant_links_clean %>%
+  filter(plant_group == "Sphaeralcea") %>%
+  pull(Code) %>%
+  unique()
+
+# Check that all bee codes exist in the abundance dataset
+setdiff(sph_bee_codes, names(bee.data))
+
+# Calculate total associated-bee abundance per sampling record
+bee_sph <- bee.data %>%
+  filter(
+    !year %in% c(2016, 2017),
+    complete_sampling_month == 1
+  ) %>%
+  mutate(
+    bee_count = rowSums(
+      across(all_of(intersect(sph_bee_codes, names(bee.data)))),
+      na.rm = FALSE
+    ),
+    window = case_when(
+      month %in% 3:5 ~ "early",
+      month %in% 6:8 ~ "mid",
+      month %in% 9:10 ~ "late"
+    )
+  )
+
+# Calculate abundance per sampling record for each window
+bee_seasonal <- bee_sph %>%
+  filter(!is.na(window)) %>%
+  group_by(year, ecosystem, window) %>%
+  summarise(
+    bee_abundance = mean(bee_count, na.rm = TRUE),
+    total_bees = sum(bee_count, na.rm = TRUE),
+    n_records = sum(!is.na(bee_count)),
+    .groups = "drop"
+  )
+
+# Calculate full-season abundance
+bee_full <- bee_sph %>%
+  group_by(year, ecosystem) %>%
+  summarise(
+    bee_abundance = mean(bee_count, na.rm = TRUE),
+    total_bees = sum(bee_count, na.rm = TRUE),
+    n_records = sum(!is.na(bee_count)),
+    .groups = "drop"
+  ) %>%
+  mutate(window = "full")
+
+# Combine windows
+bee_windows <- bind_rows(
+  bee_seasonal,
+  bee_full
+)
+
+
+# Check missing counts - looks good
+bee_sph %>%
+  summarise(
+    n_records = n(),
+    n_missing = sum(is.na(bee_count)),
+    proportion_missing = mean(is.na(bee_count))
+  )
+
+# Examine sampling effort by window - looks good
+bee_windows %>%
+  group_by(window) %>%
+  summarise(
+    min_records = min(n_records),
+    median_records = median(n_records),
+    max_records = max(n_records),
+    min_abundance = min(bee_abundance),
+    max_abundance = max(bee_abundance),
+    .groups = "drop"
+  )
+```
+
+Step 1: Find the best bee abundance window
+```{r}
+# 1. Construct the modeling dataset
+
+# Spring Sphaeralcea biomass
+sph_plant <- plant_season %>%
+  filter(
+    plant_group == "Sphaeralcea",
+    season == "spring"
+  ) %>%
+  select(
+    year, ecosystem,
+    mean_plant_biomass
+  )
+
+# Pair current and next-year biomass
+sph_pairs <- sph_plant %>%
+  rename(biomass_t = mean_plant_biomass) %>%
+  mutate(future_year = year + 1) %>%
+  left_join(
+    sph_plant %>%
+      transmute(
+        future_year = year,
+        ecosystem,
+        biomass_future = mean_plant_biomass
+      ),
+    by = c("future_year", "ecosystem")
+  )
+
+# Join bee windows and precipitation
+sph_model_data <- bee_windows %>%
+  inner_join(
+    sph_pairs,
+    by = c("year", "ecosystem")
+  ) %>%
+  left_join(
+    precip_wide %>%
+      select(year, ecosystem, precip_t),
+    by = c("year", "ecosystem")
+  ) %>%
+  left_join(
+    precip_wide %>%
+      transmute(
+        future_year = year,
+        ecosystem,
+        precip_future_spring = precip_spring
+      ),
+    by = c("future_year", "ecosystem")
+  ) %>%
+  mutate(
+    log_biomass_future = log1p(biomass_future),
+    log_biomass_t = log1p(biomass_t),
+    log_bees = log1p(bee_abundance)
+  )
+
+# Keep only observations with complete data in all four windows
+complete_pairs <- sph_model_data %>%
+  group_by(year, ecosystem) %>%
+  filter(
+    n_distinct(window) == 4,
+    all(complete.cases(
+      log_biomass_future,
+      log_biomass_t,
+      log_bees,
+      precip_t,
+      precip_future_spring
+    ))
+  ) %>%
+  ungroup() %>%
+  distinct(year, ecosystem)
+
+sph_model_data <- sph_model_data %>%
+  semi_join(complete_pairs, by = c("year", "ecosystem")) %>%
+  mutate(
+    precip_t_z = as.numeric(scale(precip_t)),
+    precip_future_spring_z =
+      as.numeric(scale(precip_future_spring))
+  )
+
+# 2. Compare windows with leave-one-year-out cross-validation
+# Cross-validation function
+cv_window <- function(dat, include_bees = TRUE) {
+
+  years <- sort(unique(dat$future_year))
+
+  predictions <- map_dfr(years, function(yr) {
+
+    train <- dat %>% filter(future_year != yr)
+    test  <- dat %>% filter(future_year == yr)
+
+    formula <- if (include_bees) {
+      log_biomass_future ~
+        log_biomass_t +
+        log_bees +
+        precip_t_z +
+        precip_future_spring_z +
+        factor(ecosystem)
+    } else {
+      log_biomass_future ~
+        log_biomass_t +
+        precip_t_z +
+        precip_future_spring_z +
+        factor(ecosystem)
+    }
+
+    fit <- lm(formula, data = train)
+
+    test %>%
+      mutate(
+        predicted = predict(fit, newdata = test)
+      )
+  })
+
+  predictions %>%
+    summarise(
+      RMSE = sqrt(mean(
+        (log_biomass_future - predicted)^2
+      )),
+      MAE = mean(abs(log_biomass_future - predicted))
+    )
+}
+
+# Baseline (without bees)
+baseline <- sph_model_data %>%
+  filter(window == "full") %>%
+  cv_window(include_bees = FALSE) %>%
+  mutate(window = "no_bees")
+
+# Four candidate windows
+window_results <- sph_model_data %>%
+  group_by(window) %>%
+  group_modify(
+    ~ cv_window(.x, include_bees = TRUE)
+  ) %>%
+  ungroup()
+
+# Compare
+cv_results <- bind_rows(
+  baseline,
+  window_results
+) %>%
+  arrange(RMSE)
+
+cv_results
+
+
+# 3. Plot predictive performance
+ggplot(
+  cv_results,
+  aes(x = reorder(window, RMSE), y = RMSE)
+) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    x = "Bee abundance window",
+    y = "Cross-validated RMSE",
+    title = "Predicting next-year Sphaeralcea biomass"
+  )
+```
+
+The midseason window (June–August) performs best, but the improvement over the model without bees is small.
+
+What this tells us
+- Midseason bees improve prediction slightly: RMSE decreases by approximately 2.1% relative to the baseline model.
+- Full-season bees provide essentially no improvement.
+- Early- and late-season bees perform worse than the baseline.
+
+```{r}
+# 4. Next: Examine the year-by-year predictive improvement
+
+mid_dat <- sph_model_data %>%
+  filter(window == "mid")
+
+cv_predictions <- map_dfr(
+  sort(unique(mid_dat$future_year)),
+  function(yr) {
+
+    train <- mid_dat %>% filter(future_year != yr)
+    test  <- mid_dat %>% filter(future_year == yr)
+
+    baseline_fit <- lm(
+      log_biomass_future ~
+        log_biomass_t +
+        precip_t_z +
+        precip_future_spring_z +
+        factor(ecosystem),
+      data = train
+    )
+
+    bee_fit <- lm(
+      log_biomass_future ~
+        log_biomass_t +
+        log_bees +
+        precip_t_z +
+        precip_future_spring_z +
+        factor(ecosystem),
+      data = train
+    )
+
+    test %>%
+      mutate(
+        pred_baseline = predict(baseline_fit, newdata = test),
+        pred_bees = predict(bee_fit, newdata = test),
+        sq_error_baseline =
+          (log_biomass_future - pred_baseline)^2,
+        sq_error_bees =
+          (log_biomass_future - pred_bees)^2
+      )
+  }
+)
+
+year_performance <- cv_predictions %>%
+  group_by(future_year) %>%
+  summarise(
+    RMSE_baseline = sqrt(mean(sq_error_baseline)),
+    RMSE_bees = sqrt(mean(sq_error_bees)),
+    improvement = RMSE_baseline - RMSE_bees,
+    .groups = "drop"
+  )
+
+ggplot(
+  year_performance,
+  aes(x = future_year, y = improvement)
+) +
+  geom_col(fill = "#4A90C3") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Plant biomass year",
+    y = "Reduction in RMSE",
+    title = "Does midseason bee abundance improve biomass prediction?",
+    subtitle = "Positive values indicate improved prediction"
+  ) +
+  theme_classic()
+
+year_performance
+```
+
+
+Visualize monthly bee abundance across ecosystems
+```{r}
+bee_monthly <- bee_sph %>%
+  group_by(year, ecosystem, month) %>%
+  summarise(
+    bee_abundance = mean(bee_count),
+    .groups = "drop"
+  )
+
+bee_monthly_summary <- bee_monthly %>%
+  group_by(ecosystem, month) %>%
+  summarise(
+    mean_abundance = mean(bee_abundance),
+    SE = sd(bee_abundance) / sqrt(n()),
+    .groups = "drop"
+  )
+
+ggplot(
+  bee_monthly_summary,
+  aes(x = month, y = mean_abundance)
+) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  geom_errorbar(
+    aes(
+      ymin = mean_abundance - SE,
+      ymax = mean_abundance + SE
+    ),
+    width = 0.15
+  ) +
+  facet_wrap(~ ecosystem) +
+  scale_x_continuous(
+    breaks = 3:10,
+    labels = month.abb[3:10]
+  ) +
+  labs(
+    x = "Month",
+    y = "Mean bees per sampling record",
+    title = "Seasonal abundance of Sphaeralcea-associated bees"
+  ) +
+  theme_classic()
+```
+
+The seasonal abundance of Sphaeralcea-associated bees differs substantially among ecosystems. So let's use the full-season (March–October) bee abundance as the primary predictor, with early-, mid-, and late-season abundance as secondary analyses.
+
+
+Does the abundance of bees recorded visiting Sphaeralcea predict changes in Sphaeralcea biomass over the following 1–3 years, after accounting for precipitation and existing biomass?
+```{r}
+# Compare 1-, 2-, and 3-year lags
+
+# Full-season bee abundance
+bee_annual <- bee_windows %>%
+  filter(window == "full") %>%
+  select(year, ecosystem, bee_abundance)
+
+# Spring Sphaeralcea biomass
+sph_annual <- plant_season %>%
+  filter(
+    plant_group == "Sphaeralcea",
+    season == "spring"
+  ) %>%
+  select(
+    year, ecosystem,
+    biomass = mean_plant_biomass
+  )
+
+# Construct datasets for 1-, 2-, and 3-year lags
+sph_lags <- map_dfr(1:3, function(lag_years) {
+
+  bee_annual %>%
+    left_join(
+      sph_annual,
+      by = c("year", "ecosystem")
+    ) %>%
+    rename(biomass_t = biomass) %>%
+    mutate(
+      lag = lag_years,
+      future_year = year + lag_years
+    ) %>%
+    left_join(
+      sph_annual %>%
+        rename(
+          future_year = year,
+          biomass_future = biomass
+        ),
+      by = c("future_year", "ecosystem")
+    )
+})
+
+# Inspect sample sizes and years
+lag_coverage <- sph_lags %>%
+  group_by(lag) %>%
+  summarise(
+    n_observations = sum(
+      !is.na(biomass_t) & !is.na(biomass_future)
+    ),
+    n_years = n_distinct(
+      year[!is.na(biomass_t) & !is.na(biomass_future)]
+    ),
+    first_bee_year = min(
+      year[!is.na(biomass_t) & !is.na(biomass_future)]
+    ),
+    last_bee_year = max(
+      year[!is.na(biomass_t) & !is.na(biomass_future)]
+    ),
+    .groups = "drop"
+  )
+
+lag_coverage
+
+
+# Prepare a consistent modeling dataset
+
+# Restrict all lags to the same bee years
+sph_lags_common <- sph_lags %>%
+  filter(
+    year %in% 2002:2015,
+    !is.na(biomass_t),
+    !is.na(biomass_future)
+  ) %>%
+  mutate(
+    log_biomass_t = log1p(biomass_t),
+    log_biomass_future = log1p(biomass_future),
+    log_bees = log1p(bee_abundance)
+  )
+
+# Verify observations and response years - looks good (42 obs per lag)
+sph_lags_common %>%
+  group_by(lag) %>%
+  summarise(
+    n = n(),
+    n_bee_years = n_distinct(year),
+    first_response_year = min(future_year),
+    last_response_year = max(future_year),
+    .groups = "drop"
+  )
+
+# Calculate precipitation for each bee year, ecosystem, and lag
+precip_lags <- sph_lags_common %>%
+  distinct(year, ecosystem, lag, future_year) %>%
+  mutate(
+    
+    # We're using cumulative precipitation
+    precip_cumulative = pmap_dbl(
+      list(year, ecosystem, lag, future_year),
+      function(year, ecosystem, lag, future_year) {
+
+        p <- precip_wide %>%
+          filter(
+            .data$ecosystem == .env$ecosystem,
+            .data$year >= .env$year,
+            .data$year <= .env$future_year
+          ) %>%
+          arrange(.data$year)
+
+        # Require all years and seasonal values
+        if (
+          nrow(p) != lag + 1 ||
+          anyNA(p$precip_spring) ||
+          anyNA(p$precip_fall)
+        ) {
+          return(NA_real_)
+        }
+
+        # Fall of initial year
+        total <- p$precip_fall[1]
+
+        # Complete intervening years
+        if (lag > 1) {
+          total <- total +
+            sum(p$precip_t[2:lag])
+        }
+
+        # Spring of response year
+        total + p$precip_spring[lag + 1]
+      }
+    )
+  )
+
+# Join precipitation to the modeling data
+sph_lags_model <- sph_lags_common %>%
+  left_join(
+    precip_lags,
+    by = c("year", "ecosystem", "lag", "future_year")
+  )
+
+
+# Step 2. Check the results
+sph_lags_model %>%
+  group_by(lag) %>%
+  summarise(
+    n = n(),
+    missing_precip = sum(is.na(precip_cumulative)),
+    min_precip = min(precip_cumulative, na.rm = TRUE),
+    mean_precip = mean(precip_cumulative, na.rm = TRUE),
+    max_precip = max(precip_cumulative, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+1. Fit the lagged biomass models
+
+Each model will test whether full-season abundance of bees recorded visiting Sphaeralcea predicts subsequent Sphaeralcea biomass, controlling for initial biomass, cumulative precipitation, and ecosystem.
+
+We'll standardize precipitation separately within each lag because the cumulative totals represent different time intervals. Also use the same bee predictor scale across all three models so the bee coefficients are directly comparable.
+```{r}
+library(purrr)
+library(broom)
+
+# Prepare predictors
+sph_lags_model <- sph_lags_model %>%
+  group_by(lag) %>%
+  mutate(
+    precip_z = as.numeric(scale(precip_cumulative))
+  ) %>%
+  ungroup() %>%
+  mutate(
+    ecosystem = factor(ecosystem),
+    log_bees = log1p(bee_abundance)
+  )
+
+# Fit one model per lag
+lag_models <- sph_lags_model %>%
+  split(.$lag) %>%
+  map(~ lm(
+    log_biomass_future ~
+      log_biomass_t +
+      log_bees +
+      precip_z +
+      ecosystem,
+    data = .x
+  ))
+
+# Extract bee coefficients and confidence intervals
+bee_effects <- imap_dfr(
+  lag_models,
+  ~ tidy(.x, conf.int = TRUE) %>%
+    filter(term == "log_bees") %>%
+    mutate(lag = as.integer(.y))
+) %>%
+  select(lag, estimate, std.error, conf.low, conf.high, p.value)
+
+bee_effects
+
+
+# Plot how the bee association changes with lag
+ggplot(
+  bee_effects,
+  aes(x = lag, y = estimate)
+) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_errorbar(
+    aes(ymin = conf.low, ymax = conf.high),
+    width = 0.12
+  ) +
+  geom_point(size = 3) +
+  scale_x_continuous(breaks = 1:3) +
+  labs(
+    x = "Lag between bee abundance and plant biomass (years)",
+    y = "Bee coefficient (95% CI)",
+    title = "Association between bee abundance and future Sphaeralcea biomass"
+  )
+```
+
+
+Test whether the one-year association is robust to shared year effects. A useful sensitivity analysis is to add bee-year fixed effects. This asks whether ecosystems with relatively higher bee abundance in a given year also have relatively higher subsequent biomass, after controlling for initial biomass, precipitation, and ecosystem.
+```{r}
+# One-year lag only
+dat_1yr <- sph_lags_model %>%
+  filter(lag == 1) %>%
+  mutate(year = factor(year))
+
+# Original model
+m_original <- lag_models[["1"]]
+
+# Model accounting for shared year effects
+m_year <- lm(
+  log_biomass_future ~
+    log_biomass_t +
+    log_bees +
+    precip_z +
+    ecosystem +
+    year,
+  data = dat_1yr
+)
+
+# Compare bee coefficients
+bind_rows(
+  tidy(m_original, conf.int = TRUE) %>%
+    filter(term == "log_bees") %>%
+    mutate(model = "Original"),
+  tidy(m_year, conf.int = TRUE) %>%
+    filter(term == "log_bees") %>%
+    mutate(model = "Year fixed effects")
+) %>%
+  select(model, estimate, std.error, conf.low, conf.high, p.value)
+```
+
+The estimated association actually becomes stronger, but less precise
+
+
+## Restrict analyses to Sphaeralcae specialists
+
+Use the 8 Oligolectic species
+```{r}
+bee_diets %>%
+  filter(Code %in% sph_bee_codes) %>%
+  select(Code, Diet.Breadth, Floral.partner.s.) %>%
+  tibble::as_tibble() %>%
+  print(n = Inf, width = Inf)
+```
+
+```{r}
+# Identify Sphaeralcea-specialist bees
+sph_specialists <- bee_diets %>%
+  filter(
+    Diet.Breadth == "Oligolectic",
+    Floral.partner.s. == "Sphaeralcea"
+  ) %>%
+  pull(Code) %>%
+  unique()
+
+# Summarize counts for each specialist
+specialist_summary <- bee.data %>%
+  filter(
+    !year %in% c(2016, 2017),
+    complete_sampling_month == 1
+  ) %>%
+  summarise(
+    across(
+      all_of(intersect(sph_specialists, names(bee.data))),
+      list(
+        total = ~sum(.x, na.rm = TRUE),
+        records_present = ~sum(.x > 0, na.rm = TRUE)
+      )
+    )
+  ) %>%
+  tidyr::pivot_longer(
+    everything(),
+    names_to = c("Code", ".value"),
+    names_pattern = "^(.*)_(total|records_present)$"
+  ) %>%
+  arrange(desc(total))
+
+specialist_summary
+
+
+
+# Annual abundance of Sphaeralcea specialists
+specialist_annual <- bee.data %>%
+  filter(
+    !year %in% c(2016, 2017),
+    complete_sampling_month == 1
+  ) %>%
+  mutate(
+    specialist_count = rowSums(
+      across(all_of(sph_specialists)),
+      na.rm = TRUE
+    )
+  ) %>%
+  group_by(year, ecosystem) %>%
+  summarise(
+    specialist_abundance = mean(specialist_count),
+    .groups = "drop"
+  )
+
+# Plot temporal variation
+ggplot(
+  specialist_annual,
+  aes(x = year, y = specialist_abundance, color = ecosystem)
+) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  facet_wrap(~ ecosystem, scales = "free_y") +
+  labs(
+    x = "Year",
+    y = "Mean specialist bees per sampling record",
+    title = "Temporal variability of Sphaeralcea-specialist bees"
+  ) +
+  theme_classic() +
+  theme(legend.position = "none")
+
+```
+
+Do specialist bee fluctuations predict subsequent plant biomass?
+```{r}
+# Add specialist abundance to the existing one-year dataset
+sph_specialist_model <- sph_lags_model %>%
+  filter(lag == 1) %>%
+  select(-log_bees) %>%
+  left_join(
+    specialist_annual,
+    by = c("year", "ecosystem")
+  ) %>%
+  mutate(
+    log_specialists = log1p(specialist_abundance)
+  )
+
+# Fit specialist model
+m_specialists <- lm(
+  log_biomass_future ~
+    log_biomass_t +
+    log_specialists +
+    precip_z +
+    ecosystem,
+  data = sph_specialist_model
+)
+
+summary(m_specialists)
+```
+
+Do specialist bees predict subsequent plant biomass better than generalist bees?
+```{r}
+### Construct the generalist bee predictor
+
+# Identify polylectic bees associated with Sphaeralcea
+sph_generalists <- bee_diets %>%
+  filter(
+    Diet.Breadth == "Polylectic",
+    grepl("Sphaeralcea", Floral.partner.s.)
+  ) %>%
+  pull(Code) %>%
+  unique()
+
+# Calculate annual abundance
+generalist_annual <- bee.data %>%
+  filter(
+    !year %in% c(2016, 2017),
+    complete_sampling_month == 1
+  ) %>%
+  mutate(
+    generalist_count = rowSums(
+      across(all_of(intersect(sph_generalists, names(bee.data)))),
+      na.rm = TRUE
+    )
+  ) %>%
+  group_by(year, ecosystem) %>%
+  summarise(
+    generalist_abundance = mean(generalist_count),
+    .groups = "drop"
+  )
+
+# Add generalist abundance to the specialist model dataset
+sph_compare <- sph_specialist_model %>%
+  left_join(generalist_annual, by = c("year", "ecosystem")) %>%
+  mutate(
+    log_generalists = log1p(generalist_abundance),
+    specialists_z = as.numeric(scale(log_specialists)),
+    generalists_z = as.numeric(scale(log_generalists))
+  )
+
+
+### Fit comparable models
+
+m_spec <- lm(
+  log_biomass_future ~
+    log_biomass_t + specialists_z + precip_z + ecosystem,
+  data = sph_compare
+)
+
+m_gen <- lm(
+  log_biomass_future ~
+    log_biomass_t + generalists_z + precip_z + ecosystem,
+  data = sph_compare
+)
+
+# Compare standardized bee effects
+bind_rows(
+  tidy(m_spec, conf.int = TRUE) %>%
+    filter(term == "specialists_z") %>%
+    mutate(group = "Specialists"),
+  tidy(m_gen, conf.int = TRUE) %>%
+    filter(term == "generalists_z") %>%
+    mutate(group = "Generalists")
+) %>%
+  select(group, estimate, std.error, conf.low, conf.high, p.value)
+```
+
+Longitudinal model of annual changes in Sphaeralcea biomass, with specialist bee abundance in the preceding year as the predictor.
+```{r}
+### Prepare the dataset
+
+dat <- sph_specialist_model %>%
+  mutate(
+    ecosystem = factor(ecosystem),
+    year = as.integer(year)
+  ) %>%
+  group_by(ecosystem) %>%
+  mutate(
+    bee_anomaly = log_specialists -
+      mean(log_specialists, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  arrange(ecosystem, year)
+
+# Check the dataset
+dat %>%
+  group_by(ecosystem) %>%
+  summarise(
+    n = n(),
+    mean_bee_anomaly = mean(bee_anomaly),
+    sd_bee_anomaly = sd(bee_anomaly),
+    .groups = "drop"
+  )
+
+
+### Fit the primary model
+m_primary <- lm(
+  log_biomass_future ~
+    log_biomass_t +
+    bee_anomaly +
+    precip_z +
+    ecosystem,
+  data = dat
+)
+
+summary(m_primary)
+confint(m_primary, "bee_anomaly")
+
+
+### Account for shared annual variation
+
+library(clubSandwich)
+
+clubSandwich::coef_test(
+  m_primary,
+  vcov = "CR2",
+  cluster = dat$year,
+  test = "Satterthwaite"
+)
+
+
+### Test whether bee fluctuations explain plant fluctuations
+
+# Model without bees
+m_null <- lm(
+  log_biomass_future ~
+    log_biomass_t +
+    precip_z +
+    ecosystem,
+  data = dat
+)
+
+# Additional explanatory power of specialist bees
+r2_null <- summary(m_null)$r.squared
+r2_bees <- summary(m_primary)$r.squared
+
+data.frame(
+  R2_without_bees = r2_null,
+  R2_with_bees = r2_bees,
+  Delta_R2 = r2_bees - r2_null
+)
+
+
+### Visualize
+
+# Residualize plant biomass against covariates
+plant_resid <- residuals(m_null)
+
+# Residualize bee anomalies against the same covariates
+m_bee_resid <- lm(
+  bee_anomaly ~
+    log_biomass_t +
+    precip_z +
+    ecosystem,
+  data = dat
+)
+
+plot_dat <- dat %>%
+  mutate(
+    plant_resid = plant_resid,
+    bee_resid = residuals(m_bee_resid)
+  )
+
+ggplot(
+  plot_dat,
+  aes(x = bee_resid, y = plant_resid)
+) +
+  geom_point(aes(color = ecosystem), size = 2.5) +
+  geom_smooth(
+    method = "lm",
+    se = TRUE,
+    color = "black"
+  ) +
+  labs(
+    x = "Specialist bee abundance (adjusted anomaly)",
+    y = "Subsequent Sphaeralcea biomass (adjusted)",
+    title = "Specialist bee fluctuations and subsequent plant biomass"
+  ) 
+```
+
+Another analysis, targeting the cascade
+```{r}
+# Predictions using observed bee anomalies
+dat$pred_observed_bees <- predict(
+  m_primary,
+  newdata = dat
+)
+
+# Predictions with bee abundance held at its ecosystem mean
+dat_constant <- dat %>%
+  mutate(bee_anomaly = 0)
+
+dat$pred_constant_bees <- predict(
+  m_primary,
+  newdata = dat_constant
+)
+
+# Compare temporal variance within each ecosystem
+variance_comparison <- dat %>%
+  group_by(ecosystem) %>%
+  summarise(
+    variance_observed_bees = var(pred_observed_bees),
+    variance_constant_bees = var(pred_constant_bees),
+    variance_difference =
+      variance_observed_bees - variance_constant_bees,
+    .groups = "drop"
+  )
+
+variance_comparison
+```
+
+
+# Another method
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+
+# ============================================================
+# 1. Build annual plant-bee dataset
+# ============================================================
+
+plant_dat <- sph_annual %>%
+  select(year, ecosystem, biomass)
+
+bee_dat <- specialist_annual %>%
+  select(year, ecosystem, specialist_abundance)
+
+# Create a complete annual plant series for each ecosystem.
+# Keep only consecutive-year transitions with bee observations.
+
+dat <- plant_dat %>%
+  left_join(bee_dat, by = c("year", "ecosystem")) %>%
+  left_join(
+    precip_wide %>%
+      select(year, ecosystem, precip_fall),
+    by = c("year", "ecosystem")
+  ) %>%
+  arrange(ecosystem, year) %>%
+  group_by(ecosystem) %>%
+  mutate(
+    next_year = lead(year),
+    biomass_next = lead(biomass),
+    precip_next_spring = NA_real_
+  ) %>%
+  ungroup() %>%
+  select(-precip_next_spring) %>%
+  left_join(
+    precip_wide %>%
+      transmute(
+        next_year = year,
+        ecosystem,
+        precip_next_spring = precip_spring
+      ),
+    by = c("next_year", "ecosystem")
+  ) %>%
+  filter(
+    next_year == year + 1,
+    !is.na(specialist_abundance),
+    !is.na(biomass),
+    !is.na(biomass_next),
+    !is.na(precip_fall),
+    !is.na(precip_next_spring)
+  ) %>%
+  mutate(
+    ecosystem = factor(ecosystem),
+    log_plant = log1p(biomass),
+    log_plant_next = log1p(biomass_next),
+    log_bees = log1p(specialist_abundance),
+    precip_interval = precip_fall + precip_next_spring
+  )
+
+# Match the previously analyzed 2002-2015 period.
+# This avoids the incomplete bee sampling years and the
+# isolated 2018-2019 transition.
+dat <- dat %>%
+  filter(year %in% 2002:2015)
+
+# Center bee abundance within ecosystems
+dat <- dat %>%
+  group_by(ecosystem) %>%
+  mutate(
+    bee_anomaly = log_bees - mean(log_bees)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    precip_z = as.numeric(scale(precip_interval))
+  )
+
+# Verify coverage
+dat %>%
+  count(ecosystem)
+
+
+# ============================================================
+# 2. Fit dynamic biomass model
+# ============================================================
+
+m <- lm(
+  log_plant_next ~
+    log_plant +
+    bee_anomaly +
+    precip_z +
+    ecosystem,
+  data = dat
+)
+
+summary(m)
+
+# Account for shared conditions among ecosystems within years
+library(clubSandwich)
+
+coef_test(
+  m,
+  vcov = "CR2",
+  cluster = dat$year,
+  test = "Satterthwaite"
+)
+
+
+# ============================================================
+# 3. Simulate plant trajectories with and without bee
+#    fluctuations
+# ============================================================
+
+simulate_trajectory <- function(model, data, use_bees = TRUE) {
+
+  data <- data %>%
+    arrange(year)
+
+  simulated <- numeric(nrow(data) + 1)
+
+  # Begin at observed initial biomass
+  simulated[1] <- data$log_plant[1]
+
+  for (i in seq_len(nrow(data))) {
+
+    newdat <- data[i, , drop = FALSE]
+
+    # Use simulated previous biomass
+    newdat$log_plant <- simulated[i]
+
+    if (!use_bees) {
+      newdat$bee_anomaly <- 0
+    }
+
+    simulated[i + 1] <- as.numeric(
+      predict(model, newdata = newdat)
+    )
+  }
+
+  tibble(
+    year = c(data$year[1], data$next_year),
+    predicted_log_biomass = simulated
+  )
+}
+
+# Simulate each ecosystem
+trajectories <- split(dat, dat$ecosystem) %>%
+  imap_dfr(function(d, eco) {
+
+    with_bees <- simulate_trajectory(m, d, TRUE) %>%
+      mutate(scenario = "Observed bee fluctuations")
+
+    constant_bees <- simulate_trajectory(m, d, FALSE) %>%
+      mutate(scenario = "Constant bee abundance")
+
+    bind_rows(with_bees, constant_bees) %>%
+      mutate(ecosystem = eco)
+  })
+
+
+# ============================================================
+# 4. Compare temporal variability
+# ============================================================
+
+variance_results <- trajectories %>%
+  group_by(ecosystem, scenario) %>%
+  summarise(
+    temporal_variance = var(predicted_log_biomass),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = scenario,
+    values_from = temporal_variance
+  ) %>%
+  rename(
+    variance_with_bees = `Observed bee fluctuations`,
+    variance_constant_bees = `Constant bee abundance`
+  ) %>%
+  mutate(
+    variance_difference =
+      variance_with_bees - variance_constant_bees,
+    percent_difference =
+      100 * variance_difference / variance_constant_bees
+  )
+
+variance_results
+
+
+# ============================================================
+# 5. Visualize simulated trajectories
+# ============================================================
+
+ggplot(
+  trajectories,
+  aes(
+    x = year,
+    y = predicted_log_biomass,
+    color = scenario
+  )
+) +
+  geom_line(linewidth = 0.9) +
+  facet_wrap(~ ecosystem) +
+  labs(
+    x = "Year",
+    y = "Predicted log(1 + Sphaeralcea biomass)",
+    color = NULL,
+    title = "Predicted Sphaeralcea biomass trajectories",
+    subtitle = "With observed versus constant specialist bee abundance"
+  ) 
+
+```
+
+
+```{r}
+library(dplyr)
+library(purrr)
+
+cv_results <- map_dfr(sort(unique(dat$year)), function(yr) {
+
+  train <- dat %>% filter(year != yr)
+  test  <- dat %>% filter(year == yr)
+
+  m_without <- lm(
+    log_plant_next ~ log_plant + precip_z + ecosystem,
+    data = train
+  )
+
+  m_with <- lm(
+    log_plant_next ~ log_plant + bee_anomaly +
+      precip_z + ecosystem,
+    data = train
+  )
+
+  tibble(
+    year = yr,
+    ecosystem = test$ecosystem,
+    observed = test$log_plant_next,
+    predicted_without = predict(m_without, newdata = test),
+    predicted_with = predict(m_with, newdata = test)
+  )
+})
+
+cv_summary <- cv_results %>%
+  summarise(
+    RMSE_without_bees =
+      sqrt(mean((observed - predicted_without)^2)),
+    RMSE_with_bees =
+      sqrt(mean((observed - predicted_with)^2))
+  )
+
+cv_summary
+```
+
+
+# Another another method
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(purrr)
+library(clubSandwich)
+
+# ============================================================
+# 1. Calculate annual changes in specialist bee abundance
+# ============================================================
+
+bee_changes <- specialist_annual %>%
+  filter(year %in% 2002:2015) %>%
+  arrange(ecosystem, year) %>%
+  group_by(ecosystem) %>%
+  mutate(
+    log_bees = log1p(specialist_abundance),
+
+    bee_change = log_bees - lag(log_bees),
+
+    # Only calculate changes between consecutive years
+    bee_change = if_else(
+      year - lag(year) == 1,
+      bee_change,
+      NA_real_
+    )
+  ) %>%
+  ungroup() %>%
+  select(year, ecosystem, bee_change)
+
+
+# ============================================================
+# 2. Join bee changes to subsequent plant biomass changes
+# ============================================================
+
+# Existing dat has:
+# log_plant = log biomass in year t
+# log_plant_next = log biomass in year t+1
+# precip_z = standardized precipitation between censuses
+
+change_dat <- dat %>%
+  mutate(
+    plant_change = log_plant_next - log_plant
+  ) %>%
+  left_join(
+    bee_changes,
+    by = c("year", "ecosystem")
+  ) %>%
+  filter(
+    !is.na(bee_change),
+    !is.na(plant_change),
+    !is.na(precip_z)
+  ) %>%
+  mutate(
+    ecosystem = factor(ecosystem)
+  )
+
+# Check sample sizes
+change_dat %>%
+  group_by(ecosystem) %>%
+  summarise(
+    n = n(),
+    first_year = min(year),
+    last_year = max(year),
+    .groups = "drop"
+  )
+
+
+# ============================================================
+# 3. Visualize the relationship
+# ============================================================
+
+ggplot(
+  change_dat,
+  aes(
+    x = bee_change,
+    y = plant_change,
+    color = ecosystem
+  )
+) +
+  geom_point(size = 2.5) +
+  geom_smooth(
+    method = "lm",
+    se = FALSE
+  ) +
+  labs(
+    x = "Annual change in log(1 + specialist bee abundance)",
+    y = "Subsequent change in log(1 + Sphaeralcea biomass)",
+    title = "Do specialist bee fluctuations precede plant fluctuations?"
+  ) +
+  theme_classic()
+
+
+# ============================================================
+# 4. Fit the first-difference model
+# ============================================================
+
+m_change <- lm(
+  plant_change ~
+    bee_change +
+    precip_z +
+    ecosystem,
+  data = change_dat
+)
+
+summary(m_change)
+
+
+# ============================================================
+# 5. Account for shared annual conditions
+# ============================================================
+
+change_test <- coef_test(
+  m_change,
+  vcov = "CR2",
+  cluster = change_dat$year,
+  test = "Satterthwaite"
+)
+
+change_test
+
+
+# ============================================================
+# 6. Compare models with and without bees
+# ============================================================
+
+m_change_null <- lm(
+  plant_change ~
+    precip_z +
+    ecosystem,
+  data = change_dat
+)
+
+r2_comparison <- tibble(
+  R2_without_bees = summary(m_change_null)$r.squared,
+  R2_with_bees = summary(m_change)$r.squared
+) %>%
+  mutate(
+    Delta_R2 = R2_with_bees - R2_without_bees
+  )
+
+r2_comparison
+
+
+# ============================================================
+# 7. Leave-one-year-out cross-validation
+# ============================================================
+
+cv_change <- map_dfr(
+  sort(unique(change_dat$year)),
+  function(yr) {
+
+    train <- change_dat %>%
+      filter(year != yr)
+
+    test <- change_dat %>%
+      filter(year == yr)
+
+    model_without <- lm(
+      plant_change ~ precip_z + ecosystem,
+      data = train
+    )
+
+    model_with <- lm(
+      plant_change ~ bee_change + precip_z + ecosystem,
+      data = train
+    )
+
+    tibble(
+      year = yr,
+      ecosystem = test$ecosystem,
+      observed = test$plant_change,
+      predicted_without = predict(
+        model_without,
+        newdata = test
+      ),
+      predicted_with = predict(
+        model_with,
+        newdata = test
+      )
+    )
+  }
+)
+
+cv_change_summary <- cv_change %>%
+  summarise(
+    RMSE_without_bees = sqrt(
+      mean((observed - predicted_without)^2)
+    ),
+    RMSE_with_bees = sqrt(
+      mean((observed - predicted_with)^2)
+    )
+  ) %>%
+  mutate(
+    percent_improvement =
+      100 * (RMSE_without_bees - RMSE_with_bees) /
+      RMSE_without_bees
+  )
+
+cv_change_summary
+
+
+# ============================================================
+# 8. Plot observed vs predicted plant changes
+# ============================================================
+
+ggplot(
+  cv_change,
+  aes(
+    x = observed,
+    y = predicted_with,
+    color = ecosystem
+  )
+) +
+  geom_point(size = 2.5) +
+  geom_abline(
+    slope = 1,
+    intercept = 0,
+    linetype = "dashed"
+  ) +
+  coord_equal() +
+  labs(
+    x = "Observed change in Sphaeralcea biomass",
+    y = "Cross-validated predicted change",
+    title = "Predicting plant biomass changes from specialist bees"
+  )
+
+```
+
+
+
+
+
+# Sphaeralcae count data
+
+```{r}
+count_data <- read.csv("./data/sev330_NPP_quad_cover_height.csv")
+
+sph_codes <- c("SPHA", "SPHAE", "SPLE")
+
+# All sampled quadrats, not just those containing Sphaeralcea
+sampled <- count_data %>%
+  filter(
+    site %in% c("core_blue", "core_black", "core_creosote"),
+    year %in% 2002:2016,
+    season == 2
+  ) %>%
+  distinct(year, site, quadID)
+
+# Sum Sphaeralcea counts within quadrats
+sph_counts <- count_data %>%
+  filter(
+    site %in% c("core_blue", "core_black", "core_creosote"),
+    year %in% 2002:2016,
+    season == 2,
+    species %in% sph_codes
+  ) %>%
+  group_by(year, site, quadID) %>%
+  summarise(
+    sph_count = sum(count),
+    .groups = "drop"
+  )
+
+# Add zero counts for sampled quadrats without Sphaeralcea
+sph_count_quad <- sampled %>%
+  left_join(sph_counts, by = c("year", "site", "quadID")) %>%
+  mutate(
+    sph_count = replace_na(sph_count, 0),
+    ecosystem = case_when(
+      site == "core_blue" ~ "B",
+      site == "core_black" ~ "G",
+      site == "core_creosote" ~ "C"
+    )
+  )
+
+# Annual abundance and occupancy
+sph_count_annual <- sph_count_quad %>%
+  group_by(year, ecosystem) %>%
+  summarise(
+    n_quads = n(),
+    total_count = sum(sph_count),
+    mean_count = mean(sph_count),
+    occupancy = mean(sph_count > 0),
+    .groups = "drop"
+  )
+
+print(sph_count_annual, n = Inf)
+```
+
+Test whether specialist bees predict plant abundance the following year
+```{r}
+# Annual Sphaeralcea abundance in blue grama grassland
+plant_counts_B <- sph_count_annual %>%
+  filter(ecosystem == "B") %>%
+  arrange(year) %>%
+  mutate(
+    count_next = lead(mean_count),
+    next_year = lead(year)
+  ) %>%
+  filter(next_year == year + 1)
+
+# Add specialist bees and precipitation
+dat_count <- plant_counts_B %>%
+  left_join(
+    specialist_annual %>%
+      filter(ecosystem == "B") %>%
+      select(year, specialist_abundance),
+    by = "year"
+  ) %>%
+  left_join(
+    dat %>%
+      filter(ecosystem == "B") %>%
+      select(year, precip_interval),
+    by = "year"
+  ) %>%
+  filter(
+    !is.na(specialist_abundance),
+    !is.na(precip_interval)
+  ) %>%
+  mutate(
+    log_count = log1p(mean_count),
+    log_count_next = log1p(count_next),
+    log_bees = log1p(specialist_abundance),
+    precip_z = as.numeric(scale(precip_interval))
+  )
+
+# Fit model
+m_count <- lm(
+  log_count_next ~ log_count + log_bees + precip_z,
+  data = dat_count
+)
+
+summary(m_count)
+```
+
+
+Spring vs. fall counts
+```{r}
+### 1. Calculate annual spring and fall plant counts
+sph_codes <- c("SPHA", "SPHAE", "SPLE")
+
+# All sampled quadrats in blue grama grassland
+sampled_B <- count_data %>%
+  filter(
+    site == "core_blue",
+    year %in% 2002:2016,
+    season %in% c(2, 3)
+  ) %>%
+  distinct(year, season, quadID)
+
+# Sphaeralcea counts per quadrat
+sph_counts_B <- count_data %>%
+  filter(
+    site == "core_blue",
+    year %in% 2002:2016,
+    season %in% c(2, 3),
+    species %in% sph_codes
+  ) %>%
+  group_by(year, season, quadID) %>%
+  summarise(
+    sph_count = sum(count),
+    .groups = "drop"
+  )
+
+# Include zeros and calculate annual means
+sph_season_annual <- sampled_B %>%
+  left_join(
+    sph_counts_B,
+    by = c("year", "season", "quadID")
+  ) %>%
+  mutate(
+    sph_count = replace_na(sph_count, 0),
+    season = recode(
+      as.character(season),
+      "2" = "spring",
+      "3" = "fall"
+    )
+  ) %>%
+  group_by(year, season) %>%
+  summarise(
+    n_quads = n(),
+    total_count = sum(sph_count),
+    mean_count = mean(sph_count),
+    occupancy = mean(sph_count > 0),
+    .groups = "drop"
+  )
+
+print(sph_season_annual, n = Inf)
+
+
+### 2. Plot spring and fall abundance
+ggplot(
+  sph_season_annual,
+  aes(x = year, y = mean_count, color = season)
+) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  scale_color_manual(
+    values = c("spring" = "#4A90C3", "fall" = "#D55E5E")
+  ) +
+  labs(
+    x = "Year",
+    y = "Mean Sphaeralcea count per quadrat",
+    color = "Season"
+  ) 
+
+
+### 3. Fit the same bee model separately for each season
+
+# Construct lagged plant abundance
+dat_season <- sph_season_annual %>%
+  group_by(season) %>%
+  arrange(year, .by_group = TRUE) %>%
+  mutate(
+    count_next = lead(mean_count),
+    next_year = lead(year)
+  ) %>%
+  ungroup() %>%
+  filter(next_year == year + 1) %>%
+  left_join(
+    specialist_annual %>%
+      filter(ecosystem == "B") %>%
+      select(year, specialist_abundance),
+    by = "year"
+  ) %>%
+  left_join(
+    dat %>%
+      filter(ecosystem == "B") %>%
+      select(year, precip_interval),
+    by = "year"
+  ) %>%
+  filter(
+    !is.na(specialist_abundance),
+    !is.na(precip_interval)
+  ) %>%
+  mutate(
+    log_count = log1p(mean_count),
+    log_count_next = log1p(count_next),
+    log_bees = log1p(specialist_abundance),
+    precip_z = as.numeric(scale(precip_interval))
+  )
+
+# Fit separate models
+m_spring <- lm(
+  log_count_next ~ log_count + log_bees + precip_z,
+  data = filter(dat_season, season == "spring")
+)
+
+m_fall <- lm(
+  log_count_next ~ log_count + log_bees + precip_z,
+  data = filter(dat_season, season == "fall")
+)
+
+summary(m_spring)
+summary(m_fall)
+
+
+### 4. Compare bee coefficients and sensitivity to 2015
+
+compare_models <- function(data, season_name) {
+
+  d <- filter(data, season == season_name)
+
+  full <- lm(
+    log_count_next ~ log_count + log_bees + precip_z,
+    data = d
+  )
+
+  without_2015 <- lm(
+    log_count_next ~ log_count + log_bees + precip_z,
+    data = filter(d, year != 2015)
+  )
+
+  tibble(
+    season = season_name,
+    model = c("All years", "Exclude 2015"),
+    n = c(nobs(full), nobs(without_2015)),
+    bee_coefficient = c(
+      coef(full)["log_bees"],
+      coef(without_2015)["log_bees"]
+    ),
+    bee_p = c(
+      coef(summary(full))["log_bees", "Pr(>|t|)"],
+      coef(summary(without_2015))["log_bees", "Pr(>|t|)"]
+    ),
+    adjusted_R2 = c(
+      summary(full)$adj.r.squared,
+      summary(without_2015)$adj.r.squared
+    )
+  )
+}
+
+bind_rows(
+  compare_models(dat_season, "spring"),
+  compare_models(dat_season, "fall")
+)
+```
+
+
+More stuff
+```{r}
+dat_lag2 <- sph_count_annual %>%
+  filter(ecosystem == "B") %>%
+  arrange(year) %>%
+  mutate(
+    count_next2 = lead(mean_count, 2),
+    year_next2 = lead(year, 2)
+  ) %>%
+  filter(year_next2 == year + 2) %>%
+  left_join(
+    specialist_annual %>%
+      filter(ecosystem == "B") %>%
+      select(year, specialist_abundance),
+    by = "year"
+  ) %>%
+  filter(!is.na(specialist_abundance)) %>%
+  mutate(
+    log_count = log1p(mean_count),
+    log_count_next2 = log1p(count_next2),
+    log_bees = log1p(specialist_abundance)
+  )
+
+m_lag2 <- lm(
+  log_count_next2 ~ log_count + log_bees,
+  data = dat_lag2
+)
+
+summary(m_lag2)
+
+
+
+library(dplyr)
+library(tidyr)
+
+fall_t <- sph_season_annual %>%
+  filter(season == "fall") %>%
+  select(year, fall_count = mean_count)
+
+spring_next <- sph_season_annual %>%
+  filter(season == "spring") %>%
+  transmute(
+    year = year - 1,
+    spring_next_count = mean_count
+  )
+
+dat_fall_spring <- fall_t %>%
+  inner_join(spring_next, by = "year") %>%
+  left_join(
+    specialist_annual %>%
+      filter(ecosystem == "B") %>%
+      select(year, specialist_abundance),
+    by = "year"
+  ) %>%
+  filter(!is.na(specialist_abundance)) %>%
+  mutate(
+    log_fall = log1p(fall_count),
+    log_spring_next = log1p(spring_next_count),
+    log_bees = log1p(specialist_abundance)
+  )
+
+print(dat_fall_spring)
+
+m_fall_spring <- lm(
+  log_spring_next ~ log_fall + log_bees,
+  data = dat_fall_spring
+)
+
+summary(m_fall_spring)
+
+m_fall_spring_null <- lm(
+  log_spring_next ~ log_fall,
+  data = dat_fall_spring
+)
+
+AIC(m_fall_spring_null, m_fall_spring)
+
+anova(m_fall_spring_null, m_fall_spring)
+
+
+m_fall_spring_no2015 <- lm(
+  log_spring_next ~ log_fall + log_bees,
+  data = filter(dat_fall_spring, year != 2015)
+)
+
+summary(m_fall_spring_no2015)
+
+# Influence diagnostics
+data.frame(
+  year = dat_fall_spring$year,
+  cooks_distance = cooks.distance(m_fall_spring),
+  leverage = hatvalues(m_fall_spring)
+) %>%
+  arrange(desc(cooks_distance))
+```
+
+```{r}
+dat_performance <- sph_annual %>%
+  filter(ecosystem == "B") %>%
+  rename(biomass = biomass) %>%
+  left_join(
+    sph_count_annual %>%
+      filter(ecosystem == "B") %>%
+      select(year, mean_count),
+    by = "year"
+  ) %>%
+  left_join(
+    specialist_annual %>%
+      filter(ecosystem == "B") %>%
+      select(year, specialist_abundance),
+    by = "year"
+  ) %>%
+  arrange(year) %>%
+  mutate(
+    biomass_next = lead(biomass),
+    count_next = lead(mean_count),
+    next_year = lead(year)
+  ) %>%
+  filter(next_year == year + 1)
+
+m_performance <- lm(
+  log1p(biomass_next) ~
+    log1p(biomass) +
+    log1p(count_next) +
+    log1p(specialist_abundance),
+  data = dat_performance
+)
+
+summary(m_performance)
+
+m_performance_no2015 <- lm(
+  log1p(biomass_next) ~
+    log1p(biomass) +
+    log1p(count_next) +
+    log1p(specialist_abundance),
+  data = filter(dat_performance, year != 2015)
+)
+
+summary(m_performance_no2015)
+
+
+dat_performance %>%
+  filter(
+    is.na(biomass_next) |
+    is.na(biomass) |
+    is.na(count_next) |
+    is.na(specialist_abundance)
+  ) %>%
+  select(
+    year, biomass, biomass_next,
+    mean_count, count_next,
+    specialist_abundance
+  )
+
+m_performance_null <- lm(
+  log1p(biomass_next) ~
+    log1p(biomass) +
+    log1p(count_next),
+  data = dat_performance
+)
+
+AIC(m_performance_null, m_performance)
+
+anova(m_performance_null, m_performance)
+
+```
+
+
+# Bee --> Plant
+
+```{r}
+dat_plant_bee <- specialist_annual %>%
+  filter(ecosystem == "B") %>%
+  select(year, specialist_abundance) %>%
+  left_join(
+    sph_count_annual %>%
+      filter(ecosystem == "B") %>%
+      select(year, mean_count, occupancy),
+    by = "year"
+  ) %>%
+  left_join(
+    sph_annual %>%
+      filter(ecosystem == "B") %>%
+      select(year, biomass),
+    by = "year"
+  ) %>%
+  filter(
+    !is.na(specialist_abundance),
+    !is.na(mean_count),
+    !is.na(biomass)
+  ) %>%
+  mutate(
+    log_bees = log1p(specialist_abundance),
+    log_count = log1p(mean_count),
+    log_biomass = log1p(biomass)
+  )
+
+print(dat_plant_bee, n = Inf)
+
+
+
+# Plant counts
+m_bees_count <- lm(
+  log_bees ~ log_count,
+  data = dat_plant_bee
+)
+
+# Plant biomass
+m_bees_biomass <- lm(
+  log_bees ~ log_biomass,
+  data = dat_plant_bee
+)
+
+summary(m_bees_count)
+summary(m_bees_biomass)
+
+
+library(ggplot2)
+
+ggplot(dat_plant_bee, aes(log_count, log_bees)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    x = "Log(1 + Sphaeralcea count per quadrat)",
+    y = "Log(1 + specialist bee abundance)"
+  )
+
+ggplot(dat_plant_bee, aes(log_biomass, log_bees)) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(
+    x = "Log(1 + Sphaeralcea biomass)",
+    y = "Log(1 + specialist bee abundance)"
+  )
+
+
+m_bees_count_no2015 <- lm(
+  log_bees ~ log_count,
+  data = filter(dat_plant_bee, year != 2015)
+)
+
+m_bees_biomass_no2015 <- lm(
+  log_bees ~ log_biomass,
+  data = filter(dat_plant_bee, year != 2015)
+)
+
+summary(m_bees_count_no2015)
+summary(m_bees_biomass_no2015)
+
+
+dat_plant_bee_climate <- dat_plant_bee %>%
+  left_join(
+    precip_wide %>%
+      filter(ecosystem == "B") %>%
+      select(year, precip_t),
+    by = "year"
+  ) %>%
+  filter(!is.na(precip_t)) %>%
+  mutate(
+    precip_z = as.numeric(scale(precip_t))
+  )
+
+
+m_bees_count_climate <- lm(
+  log_bees ~ log_count + precip_z,
+  data = dat_plant_bee_climate
+)
+
+m_bees_biomass_climate <- lm(
+  log_bees ~ log_biomass + precip_z,
+  data = dat_plant_bee_climate
+)
+
+summary(m_bees_count_climate)
+summary(m_bees_biomass_climate)
+
+
+m_bees_count_climate_no2015 <- lm(
+  log_bees ~ log_count + precip_z,
+  data = filter(dat_plant_bee_climate, year != 2015)
+)
+
+m_bees_biomass_climate_no2015 <- lm(
+  log_bees ~ log_biomass + precip_z,
+  data = filter(dat_plant_bee_climate, year != 2015)
+)
+
+summary(m_bees_count_climate_no2015)
+summary(m_bees_biomass_climate_no2015)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
